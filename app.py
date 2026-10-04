@@ -2356,7 +2356,8 @@ class Servis:
 
 
 @st.cache_resource
-def servis_al() -> Servis:
+def servis_al_v2(surum: str = "bot-1") -> Servis:
+    # Ad ve sürüm değişince Streamlit eski (önceki app.py'den kalan) servisi kullanmaz
     return Servis()
 
 
@@ -2396,7 +2397,10 @@ iframe {height:100dvh !important; display:block; border:0}
 div[data-testid="stVerticalBlock"] {gap:0 !important}
 </style>""", unsafe_allow_html=True)
 
-servis = servis_al()
+servis = servis_al_v2()
+if not hasattr(servis, "canli"):   # önbellekte eski sürüm kalmışsa temizle ve yeniden kur
+    st.cache_resource.clear()
+    servis = servis_al_v2()
 
 mesaj = None
 try:
