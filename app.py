@@ -14,15 +14,14 @@ Yatırım tavsiyesi değildir.
 
 import bisect
 import datetime as dt
-import html
+import json
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
-from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="BIST Sinyal", page_icon="📈", layout="wide")
 
@@ -476,308 +475,388 @@ def istatistik(sinyaller: list[dict]) -> dict:
                 ort=np.mean([s["getiri"] for s in biten]) * 100 if biten else None)
 
 
-# ---------- Görünüm ----------
-RENK = dict(zemin="#0b0f14", kart="#121821", cizgi="#1f2a37", yazi="#e6edf3",
-            soluk="#8b98a5", yesil="#22c55e", kirmizi="#ef4444", vurgu="#f5a524", mor="#a78bfa")
-
-STIL = f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');
-html, body, [class*="css"], .stApp {{ font-family: 'IBM Plex Sans', sans-serif; }}
-.stApp {{ background: {RENK['zemin']}; color: {RENK['yazi']}; }}
-#MainMenu, footer, header[data-testid="stHeader"] {{ visibility: hidden; height: 0; }}
-.block-container {{ padding: 1rem 0.9rem 3rem; max-width: 900px; }}
-
-.ust {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:.4rem; }}
-.logo {{ font-weight:700; font-size:1.35rem; letter-spacing:-.02em; }}
-.logo span {{ color:{RENK['vurgu']}; }}
-.seans {{ font-size:.75rem; padding:.25rem .6rem; border-radius:999px; border:1px solid {RENK['cizgi']}; }}
-.seans.acik {{ color:{RENK['yesil']}; border-color:{RENK['yesil']}55; }}
-.seans.kapali {{ color:{RENK['soluk']}; }}
-.altbilgi {{ color:{RENK['soluk']}; font-size:.72rem; margin-bottom:1rem; }}
-
-.ozet {{ display:grid; grid-template-columns:repeat(4,1fr); gap:.45rem; margin-bottom:1.1rem; }}
-.ozet div {{ background:{RENK['kart']}; border:1px solid {RENK['cizgi']}; border-radius:12px; padding:.55rem .6rem; }}
-.ozet b {{ display:block; font-family:'JetBrains Mono',monospace; font-size:1.15rem; }}
-.ozet small {{ color:{RENK['soluk']}; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }}
-
-.baslik {{ font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; color:{RENK['soluk']};
-          margin:1.3rem 0 .5rem; font-weight:600; }}
-
-.kart {{ background:{RENK['kart']}; border:1px solid {RENK['cizgi']}; border-left:4px solid;
-        border-radius:12px; padding:.75rem .85rem; margin-bottom:.6rem; }}
-.kart.al {{ border-left-color:{RENK['yesil']}; }}
-.kart.sat {{ border-left-color:{RENK['kirmizi']}; }}
-.kart-ust {{ display:flex; align-items:center; gap:.5rem; }}
-.rozet {{ font-weight:700; font-size:.75rem; padding:.15rem .5rem; border-radius:6px; color:#0b0f14; }}
-.rozet.al {{ background:{RENK['yesil']}; }}
-.rozet.sat {{ background:{RENK['kirmizi']}; }}
-.kod {{ font-weight:700; font-size:1.05rem; }}
-.fiyat {{ margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:1.05rem; }}
-.guven {{ display:flex; align-items:center; gap:.5rem; margin:.5rem 0 .2rem; font-size:.75rem; color:{RENK['soluk']}; }}
-.guven .bar {{ flex:1; height:6px; background:{RENK['zemin']}; border-radius:99px; overflow:hidden; }}
-.guven .bar i {{ display:block; height:100%; border-radius:99px; }}
-.guven b {{ font-family:'JetBrains Mono',monospace; color:{RENK['yazi']}; }}
-.sebep {{ color:{RENK['yazi']}; font-size:.88rem; font-weight:600; margin:.35rem 0 .4rem; }}
-.nedenler {{ display:flex; flex-wrap:wrap; gap:.3rem; margin-bottom:.5rem; }}
-.nedenler span {{ font-size:.7rem; border-radius:6px; padding:.12rem .4rem; }}
-.nedenler .p {{ color:{RENK['yesil']}; background:{RENK['yesil']}14; }}
-.nedenler .n {{ color:{RENK['kirmizi']}; background:{RENK['kirmizi']}14; }}
-.cipler {{ display:flex; flex-wrap:wrap; gap:.35rem; }}
-.cipler span {{ font-size:.72rem; color:{RENK['soluk']}; background:{RENK['zemin']};
-               border:1px solid {RENK['cizgi']}; border-radius:6px; padding:.15rem .45rem; }}
-.cipler .stop {{ color:{RENK['kirmizi']}; }}
-.cipler .hedef {{ color:{RENK['yesil']}; }}
-.bos {{ background:{RENK['kart']}; border:1px dashed {RENK['cizgi']}; border-radius:12px;
-       padding:.9rem; color:{RENK['soluk']}; font-size:.85rem; text-align:center; }}
-
-.liste {{ background:{RENK['kart']}; border:1px solid {RENK['cizgi']}; border-radius:12px; overflow:hidden; }}
-.satir {{ display:grid; grid-template-columns:1.1fr 1fr .8fr 1.2fr; align-items:center; gap:.3rem;
-         padding:.55rem .8rem; border-bottom:1px solid {RENK['cizgi']}; font-size:.85rem; }}
-.satir:last-child {{ border-bottom:none; }}
-.satir.bas {{ color:{RENK['soluk']}; font-size:.68rem; text-transform:uppercase; letter-spacing:.05em; }}
-.satir .sag {{ text-align:right; font-family:'JetBrains Mono',monospace; }}
-.satir.f {{ grid-template-columns:1fr 1.6fr 1fr; }}
-.arti {{ color:{RENK['yesil']}; }} .eksi {{ color:{RENK['kirmizi']}; }}
-.hap {{ justify-self:end; font-size:.68rem; padding:.12rem .45rem; border-radius:999px;
-       border:1px solid {RENK['cizgi']}; color:{RENK['soluk']}; white-space:nowrap; }}
-.hap.al {{ color:{RENK['yesil']}; border-color:{RENK['yesil']}66; }}
-.hap.sat {{ color:{RENK['kirmizi']}; border-color:{RENK['kirmizi']}66; }}
-.hap.yakin {{ color:{RENK['vurgu']}; border-color:{RENK['vurgu']}66; }}
-.hap.form {{ color:{RENK['mor']}; border-color:{RENK['mor']}66; }}
-
-.bilgi {{ display:grid; grid-template-columns:repeat(4,1fr); gap:.4rem; margin-top:.3rem; }}
-.bilgi div {{ background:{RENK['kart']}; border:1px solid {RENK['cizgi']}; border-radius:10px;
-             padding:.45rem .55rem; font-size:.66rem; color:{RENK['soluk']}; }}
-.bilgi b {{ display:block; color:{RENK['yazi']}; font-family:'JetBrains Mono',monospace; font-size:.88rem; }}
-
-.test {{ background:{RENK['kart']}; border:1px solid {RENK['cizgi']}; border-radius:12px; padding:.75rem .85rem; }}
-.test .sayilar {{ display:grid; grid-template-columns:repeat(4,1fr); gap:.4rem; text-align:center; margin-bottom:.5rem; }}
-.test .sayilar b {{ display:block; font-family:'JetBrains Mono',monospace; font-size:1.05rem; }}
-.test .sayilar small {{ color:{RENK['soluk']}; font-size:.62rem; text-transform:uppercase; }}
-.test .gecmis {{ font-size:.75rem; color:{RENK['soluk']}; border-top:1px solid {RENK['cizgi']}; padding-top:.45rem; }}
-.test .gecmis div {{ display:flex; justify-content:space-between; padding:.12rem 0; }}
-.not {{ color:{RENK['soluk']}; font-size:.68rem; margin-top:.4rem; }}
-
-.uyari {{ color:{RENK['soluk']}; font-size:.7rem; text-align:center; margin-top:1.5rem; }}
-div[data-testid="stProgress"] > div > div > div {{ background:{RENK['vurgu']}; }}
-</style>
-"""
+# ---------- Siteye gidecek veri ----------
+def _ts(t) -> int:
+    """Grafik ekseninde İstanbul saati görünsün diye UTC damgasına +3 saat eklenir."""
+    return int(t.timestamp()) + 3 * 3600
 
 
-def guven_rengi(g):
-    return RENK["yesil"] if g >= 70 else (RENK["vurgu"] if g >= 50 else RENK["soluk"])
+def _r(x, n=4):
+    return None if x is None or (isinstance(x, float) and np.isnan(x)) else round(float(x), n)
 
 
-def guven_adi(g):
-    return "Güçlü" if g >= 70 else ("Orta" if g >= 50 else "Zayıf")
+def sinyal_ozet(s: dict, df: pd.DataFrame, n: int) -> dict:
+    return dict(
+        t=_ts(df.index[s["i"]]), saat=f"{df.index[s['i']]:%d.%m %H:%M}", once=n - 1 - s["i"],
+        tur=s["tur"], yon=s["yon"], guven=s["guven"], sebepler=s["sebepler"], arti=s["arti"], eksi=s["eksi"],
+        fiyat=_r(s["fiyat"]), stop=_r(s["stop"]), hedef=_r(s["hedef"]), rk=_r(s["rk"], 2),
+        sonuc=s["sonuc"], getiri=_r(s["getiri"] * 100, 2),
+    )
 
 
-def sinyal_karti(a: dict, s: dict) -> str:
-    tur = s["tur"].lower()
-    kac = a["n"] - 1 - s["i"]
-    ne_zaman = "son mumda" if kac == 0 else f"{kac} mum önce"
-    nedenler = "".join(f'<span class="p">✓ {html.escape(x)}</span>' for x in s["arti"])
-    nedenler += "".join(f'<span class="n">✗ {html.escape(x)}</span>' for x in s["eksi"])
-    g = s["guven"]
-    return f"""
-<div class="kart {tur}">
-  <div class="kart-ust"><span class="rozet {tur}">{s['tur']}</span>
-    <span class="kod">{html.escape(a['hisse'])}</span>
-    <span class="fiyat">{sayi(a['fiyat'])}</span></div>
-  <div class="guven">Güven <div class="bar"><i style="width:{g}%;background:{guven_rengi(g)}"></i></div>
-    <b>{g}</b> {guven_adi(g)}</div>
-  <div class="sebep">{html.escape(' + '.join(s['sebepler']))}</div>
-  <div class="nedenler">{nedenler}</div>
-  <div class="cipler">
-    <span>⏱ {s['zaman']:%H:%M} · {ne_zaman}</span>
-    <span>Sinyal {sayi(s['fiyat'])}</span>
-    <span class="stop">Stop {sayi(s['stop'])}</span>
-    <span class="hedef">Hedef {sayi(s['hedef'])}</span>
-    <span>R/K {s['rk']:.1f}</span>
-  </div>
-</div>"""
-
-
-def form_listesi(kayitlar: list[tuple]) -> str:
-    satirlar = []
-    for hisse, f in kayitlar:
-        yon = "al" if f["yon"] > 0 else ("sat" if f["yon"] < 0 else "form")
-        beklenti = "yukarı" if f["yon"] > 0 else ("aşağı" if f["yon"] < 0 else "yön belirsiz")
-        satirlar.append(
-            f'<div class="satir f"><b>{html.escape(hisse)}</b><span>{f["ad"]}</span>'
-            f'<span class="hap {yon}">{f["durum"]} · {beklenti}</span></div>')
-    return '<div class="liste">' + "".join(satirlar) + "</div>"
-
-
-def hisse_listesi(sonuclar: list[dict], guncel: dict) -> str:
-    satirlar = ['<div class="satir bas"><span>Hisse</span><span class="sag">Fiyat</span>'
-                '<span class="sag">Gün</span><span class="sag">Durum</span></div>']
-    for a in sonuclar:
-        s = guncel.get(a["hisse"])
-        acik_form = [f for f in a["formlar"] if f["durum"] == "oluşuyor"]
-        if s:
-            hap = f'<span class="hap {s["tur"].lower()}">{s["tur"]} · {s["guven"]}</span>'
-        elif acik_form:
-            hap = f'<span class="hap form">{acik_form[0]["ad"]}</span>'
-        elif a["direnc"] and (a["direnc"] - a["fiyat"]) / a["fiyat"] < 0.01:
-            hap = '<span class="hap yakin">Dirence yakın</span>'
-        elif a["destek"] and (a["fiyat"] - a["destek"]) / a["fiyat"] < 0.01:
-            hap = '<span class="hap yakin">Desteğe yakın</span>'
-        else:
-            hap = f'<span class="hap">RSI {a["rsi"]:.0f}</span>'
-        yon = "arti" if a["degisim"] >= 0 else "eksi"
-        satirlar.append(
-            f'<div class="satir"><b>{html.escape(a["hisse"])}</b>'
-            f'<span class="sag">{sayi(a["fiyat"])}</span>'
-            f'<span class="sag {yon}">{a["degisim"]:+.2f}%</span>{hap}</div>')
-    return '<div class="liste">' + "".join(satirlar) + "</div>"
-
-
-def test_kutusu(a: dict, sinyaller: list[dict]) -> str:
-    ist = istatistik(sinyaller)
-    isabet = f"%{ist['isabet']:.0f}" if ist["isabet"] is not None else "—"
-    ort = f"{ist['ort']:+.2f}%" if ist["ort"] is not None else "—"
-    son = []
-    for s in sinyaller[-6:][::-1]:
-        renk = "arti" if s["sonuc"] == "hedef" else ("eksi" if s["sonuc"] == "stop" else "")
-        son.append(f'<div><span>{s["zaman"]:%d.%m %H:%M} · {s["tur"]} · güven {s["guven"]}</span>'
-                   f'<span class="{renk}">{s["sonuc"]} {s["getiri"] * 100:+.1f}%</span></div>')
-    gecmis = "".join(son) or "<div>Bu dönemde eşiği geçen sinyal yok</div>"
-    return f"""
-<div class="test">
-  <div class="sayilar">
-    <div><small>Sinyal</small><b>{ist['toplam']}</b></div>
-    <div><small>Hedef</small><b class="arti">{ist['hedef']}</b></div>
-    <div><small>Stop</small><b class="eksi">{ist['stop']}</b></div>
-    <div><small>İsabet</small><b>{isabet}</b></div>
-  </div>
-  <div class="gecmis">{gecmis}</div>
-  <div class="not">Sinyal başına ort. sonuç {ort}. Aynı kurallar bu hissenin geçmiş verisine uygulandı;
-  her sinyalden sonra {TEST_UFKU} mum içinde önce hedef mi stop mu geldiğine bakıldı.
-  Geçmişte tutması gelecekte tutacağını garanti etmez.</div>
-</div>"""
-
-
-# ---------- Grafik ----------
-def grafik(a: dict, sinyaller: list[dict], mum_sayisi: int = 120) -> go.Figure:
-    df = a["df"]
-    bas = max(0, len(df) - mum_sayisi)
+def hisse_paketi(a: dict, sinyaller: list[dict], guncel) -> dict:
+    df, n = a["df"], a["n"]
+    bas = max(0, len(df) - 300)
     w = df.iloc[bas:]
-    etiket = list(df.index.strftime("%d.%m %H:%M"))
-    x = etiket[bas:]
+    zaman = [_ts(t) for t in w.index]
 
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.62, 0.17, 0.21], vertical_spacing=0.02)
-    fig.add_trace(go.Candlestick(
-        x=x, open=w["Open"], high=w["High"], low=w["Low"], close=w["Close"],
-        increasing=dict(line=dict(color=RENK["yesil"]), fillcolor=RENK["yesil"]),
-        decreasing=dict(line=dict(color=RENK["kirmizi"]), fillcolor=RENK["kirmizi"]),
-        name="Fiyat"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x, y=w["EMA20"], line=dict(color="#38bdf8", width=1), name="EMA20"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x, y=w["EMA50"], line=dict(color=RENK["vurgu"], width=1.3), name="EMA50"), row=1, col=1)
+    def seri(kol):
+        return [[t, _r(v)] for t, v in zip(zaman, w[kol].values) if not np.isnan(v)]
 
-    alt, ust = w["Low"].min() * 0.99, w["High"].max() * 1.01
-    for s in a["seviyeler"]:
-        if alt <= s <= ust:
-            c = RENK["yesil"] if s < a["fiyat"] else RENK["kirmizi"]
-            fig.add_hline(y=s, line_dash="dot", line_width=1, line_color=c, opacity=0.7,
-                          annotation_text=sayi(s), annotation_position="top left",
-                          annotation_font=dict(color=c, size=10), row=1, col=1)
-
-    # Formasyon çizgileri
+    formlar = []
     for f in a["formlar"]:
-        xs, ys = [], []
+        cizgiler = []
         for j0, y0, j1, y1 in f["cizgiler"]:
-            if j1 < bas:
+            j0, j1 = int(j0), int(j1)
+            if j1 < bas or j1 >= len(df):
                 continue
             if j0 < bas:
                 y0 = y0 + (y1 - y0) * (bas - j0) / (j1 - j0)
                 j0 = bas
-            xs += [etiket[int(j0)], etiket[int(j1)], None]
-            ys += [y0, y1, None]
-        if xs:
-            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color=RENK["mor"], width=1.6),
-                                     name=f["ad"], hoverinfo="name"), row=1, col=1)
+            if j1 > j0:
+                cizgiler.append([_ts(df.index[j0]), _r(y0), _ts(df.index[j1]), _r(y1)])
+        formlar.append(dict(ad=f["ad"], yon=f["yon"], durum=f["durum"], ref=_r(f["ref"]),
+                            hedef=_r(f["hedef"]), cizgiler=cizgiler))
 
-    # Sinyal okları
-    for s in sinyaller:
-        if s["i"] < bas:
-            continue
-        al_mi = s["yon"] > 0
-        c = RENK["yesil"] if al_mi else RENK["kirmizi"]
-        y = df["Low"].iloc[s["i"]] * 0.994 if al_mi else df["High"].iloc[s["i"]] * 1.006
-        fig.add_trace(go.Scatter(
-            x=[etiket[s["i"]]], y=[y], mode="markers+text", text=[s["tur"]],
-            textfont=dict(color=c, size=10), textposition="bottom center" if al_mi else "top center",
-            marker=dict(symbol="triangle-up" if al_mi else "triangle-down", size=12, color=c),
-            hovertext=f"{s['tur']} · güven {s['guven']} · {s['sonuc']}", hoverinfo="text"), row=1, col=1)
-
-    renk = np.where(w["Close"] >= w["Open"], RENK["yesil"], RENK["kirmizi"])
-    fig.add_trace(go.Bar(x=x, y=w["Volume"], marker_color=renk, opacity=0.45, name="Hacim"), row=2, col=1)
-    mrenk = np.where(w["MACDh"] >= 0, RENK["yesil"], RENK["kirmizi"])
-    fig.add_trace(go.Bar(x=x, y=w["MACDh"], marker_color=mrenk, opacity=0.5, name="MACD hist"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x, y=w["MACD"], line=dict(color="#38bdf8", width=1), name="MACD"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x, y=w["MACDs"], line=dict(color=RENK["vurgu"], width=1), name="Sinyal"), row=3, col=1)
-
-    fig.update_layout(
-        height=580, margin=dict(l=4, r=4, t=6, b=4), showlegend=False,
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=RENK["zemin"],
-        font=dict(family="IBM Plex Sans, sans-serif", color=RENK["soluk"], size=10),
-        xaxis_rangeslider_visible=False, dragmode="pan", hovermode="x unified")
-    fig.update_xaxes(type="category", nticks=5, gridcolor=RENK["cizgi"], showline=False)
-    fig.update_yaxes(gridcolor=RENK["cizgi"], side="right", zeroline=False)
-    return fig
+    ist = istatistik(sinyaller)
+    gunluk = df[df.index.date == df.index[-1].date()]
+    bar_gun = max(len(gunluk), 1)
+    return dict(
+        hisse=a["hisse"], fiyat=_r(a["fiyat"]), degisim=_r(a["degisim"], 2),
+        mumlar=[[t, _r(o), _r(h), _r(l), _r(c), _r(v, 0)] for t, o, h, l, c, v in
+                zip(zaman, w["Open"].values, w["High"].values, w["Low"].values, w["Close"].values, w["Volume"].values)],
+        ema20=seri("EMA20"), ema50=seri("EMA50"), ema200=seri("EMA200"),
+        seviyeler=[_r(s) for s in a["seviyeler"]],
+        destek=_r(a["destek"]), direnc=_r(a["direnc"]),
+        formlar=formlar,
+        sinyaller=[sinyal_ozet(s, df, n) for s in sinyaller if s["i"] >= bas],
+        guncel=sinyal_ozet(guncel, df, n) if guncel else None,
+        son_sinyal=sinyal_ozet(sinyaller[-1], df, n) if sinyaller else None,
+        rsi=_r(a["rsi"], 1), macd=_r(a["macd"]), atr=_r(a["atr_yuzde"], 2), trend=a["trend"],
+        ist=dict(toplam=ist["toplam"], hedef=ist["hedef"], stop=ist["stop"],
+                 isabet=_r(ist["isabet"], 0), ort=_r(ist["ort"], 2)),
+        bar_gun=bar_gun,
+    )
 
 
-TV_PERIYOT = {"5m": "5", "15m": "15", "30m": "30", "1h": "60"}
+# ---------- Arayüz (HTML + JS) ----------
+ARAYUZ = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root{--bg:#0b0d12;--s1:#14171f;--s2:#1b1f29;--s3:#252a36;--tx:#f3f5f8;--mu:#8b93a3;--mu2:#5d6575;
+--up:#16c784;--dn:#ea3943;--ac:#6c8cff;--wa:#f5a524;--fo:#b48cff;--r:16px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font-family:Inter,system-ui,sans-serif}
+body{overflow:hidden}
+.num{font-variant-numeric:tabular-nums}
+#app{display:flex;flex-direction:column;height:100%}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px}
+.logo{font-weight:800;font-size:20px;letter-spacing:-.03em}.logo b{color:var(--ac)}
+.piyasa{text-align:right;font-size:12px;color:var(--mu)}.piyasa div{font-weight:700;color:var(--tx);font-size:14px}
+.seans{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--mu);margin-top:2px}
+.seans i{width:6px;height:6px;border-radius:50%;background:var(--mu2)}.seans.acik i{background:var(--up);box-shadow:0 0 8px var(--up)}
+main{flex:1;overflow-y:auto;padding:4px 16px 90px;-webkit-overflow-scrolling:touch}
+h2{font-size:22px;font-weight:800;letter-spacing:-.02em;margin:8px 0 12px}
+.alt-baslik{font-size:12px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin:20px 0 10px}
+nav.alt{position:fixed;left:0;right:0;bottom:0;display:flex;background:rgba(15,17,23,.92);backdrop-filter:blur(14px);
+border-top:1px solid var(--s3);padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
+nav.alt button{flex:1;background:none;border:0;color:var(--mu);font:600 11px Inter;display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 0;position:relative}
+nav.alt button svg{width:22px;height:22px}
+nav.alt button.on{color:var(--tx)}
+nav.alt .rozet{position:absolute;top:2px;left:calc(50% + 6px);background:var(--dn);color:#fff;font-size:10px;border-radius:9px;padding:1px 5px}
+.ozet{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:6px}
+.ozet div{background:var(--s1);border-radius:14px;padding:12px}
+.ozet small{display:block;color:var(--mu);font-size:11px;font-weight:600;margin-bottom:4px}
+.ozet b{font-size:22px;font-weight:800}
+.up{color:var(--up)}.dn{color:var(--dn)}
+.kart{background:var(--s1);border-radius:var(--r);padding:14px;margin-bottom:10px;cursor:pointer;transition:transform .1s}
+.kart:active{transform:scale(.985)}
+.satir1{display:flex;align-items:center;gap:12px}
+.av{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:13px;flex:none;color:#fff}
+.ad{flex:1;min-width:0}.ad b{display:block;font-size:16px;font-weight:700}.ad small{color:var(--mu);font-size:12px}
+.sag{text-align:right}.sag b{display:block;font-size:16px;font-weight:700}
+.pill{display:inline-block;font-size:12px;font-weight:700;border-radius:8px;padding:3px 8px;margin-top:3px}
+.pill.up{background:rgba(22,199,132,.14)}.pill.dn{background:rgba(234,57,67,.14)}
+.tur{font-weight:800;font-size:13px;border-radius:8px;padding:5px 10px;color:#fff}
+.tur.al{background:var(--up)}.tur.sat{background:var(--dn)}
+.guven{display:flex;align-items:center;gap:10px;margin:12px 0 8px;font-size:12px;color:var(--mu)}
+.bar{flex:1;height:6px;background:var(--s3);border-radius:9px;overflow:hidden}.bar i{display:block;height:100%;border-radius:9px}
+.guven b{color:var(--tx);font-size:14px}
+.sebep{font-size:14px;font-weight:600;margin-bottom:10px}
+.ucl{display:grid;grid-template-columns:repeat(3,1fr);background:var(--s2);border-radius:12px;padding:10px 4px;text-align:center}
+.ucl small{display:block;color:var(--mu);font-size:11px;margin-bottom:2px}.ucl b{font-size:14px}
+.bos{background:var(--s1);border-radius:var(--r);padding:28px 18px;text-align:center;color:var(--mu);font-size:14px;line-height:1.5}
+.bos b{display:block;color:var(--tx);font-size:16px;margin-bottom:4px}
+.liste{background:var(--s1);border-radius:var(--r);overflow:hidden}
+.liste .satir1{padding:12px 14px;border-bottom:1px solid var(--s2);cursor:pointer}
+.liste .satir1:last-child{border-bottom:0}.liste .satir1:active{background:var(--s2)}
+.chips{display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;scrollbar-width:none}.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;background:var(--s1);color:var(--mu);border:0;border-radius:20px;padding:8px 14px;font:600 13px Inter}
+.chip.on{background:var(--tx);color:var(--bg)}
+.etiket{font-size:11px;font-weight:600;border-radius:6px;padding:2px 6px;margin-left:6px;vertical-align:2px}
+.etiket.al{color:var(--up);background:rgba(22,199,132,.12)}.etiket.sat{color:var(--dn);background:rgba(234,57,67,.12)}
+.etiket.fo{color:var(--fo);background:rgba(180,140,255,.12)}
+/* detay */
+#detay{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .25s ease;z-index:10}
+#detay.ac{transform:none}
+.dust{display:flex;align-items:center;gap:10px;padding:12px 12px 4px}
+.geri{background:var(--s1);border:0;color:var(--tx);width:38px;height:38px;border-radius:50%;font-size:20px;display:grid;place-items:center}
+.dust .ad b{font-size:18px}
+.tv{margin-left:auto;background:var(--s1);color:var(--mu);border-radius:20px;padding:8px 12px;font-size:12px;font-weight:600;text-decoration:none}
+#dicerik{flex:1;overflow-y:auto;padding:0 0 30px}
+.fiyatbas{padding:8px 16px 4px}.fiyatbas .buyuk{font-size:34px;font-weight:800;letter-spacing:-.03em}
+.fiyatbas .pill{font-size:13px;margin-left:8px;vertical-align:6px}
+.legend{padding:0 16px;height:18px;font-size:11px;color:var(--mu)}
+#grafik{height:360px;margin:4px 0 0}
+.gsec{display:flex;gap:6px;padding:8px 16px;overflow-x:auto;scrollbar-width:none}.gsec::-webkit-scrollbar{display:none}
+.gsec .chip{padding:6px 11px;font-size:12px}
+.gsec .ayr{width:1px;background:var(--s3);flex:none;margin:4px 2px}
+.dpad{padding:0 16px}
+.sekmeler{display:flex;background:var(--s1);border-radius:12px;padding:4px;margin:14px 0 12px}
+.sekmeler button{flex:1;border:0;background:none;color:var(--mu);font:600 13px Inter;padding:9px 0;border-radius:9px}
+.sekmeler button.on{background:var(--s3);color:var(--tx)}
+.neden{display:flex;flex-direction:column;gap:6px;margin:10px 0 12px}
+.neden div{font-size:13px;display:flex;gap:8px;align-items:flex-start}
+.neden .p::before{content:"✓";color:var(--up);font-weight:800}.neden .n::before{content:"✕";color:var(--dn);font-weight:800}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.grid div{background:var(--s1);border-radius:12px;padding:12px}
+.grid small{display:block;color:var(--mu);font-size:11px;margin-bottom:3px}.grid b{font-size:16px}
+.sayilar{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center;margin-bottom:12px}
+.sayilar div{background:var(--s1);border-radius:12px;padding:10px 4px}.sayilar small{display:block;color:var(--mu);font-size:10px;margin-bottom:3px;font-weight:600}
+.sayilar b{font-size:18px}
+.gecmis .satir1{font-size:13px}
+.not{color:var(--mu2);font-size:11px;line-height:1.5;margin-top:12px}
+.uyari{color:var(--mu2);font-size:11px;text-align:center;margin:22px 0 4px}
+</style></head><body>
+<div id="app">
+  <header>
+    <div><div class="logo">BIST<b>·</b>Sinyal</div><div class="seans" id="seans"><i></i><span></span></div></div>
+    <div class="piyasa" id="piyasa"></div>
+  </header>
+  <main id="ekran"></main>
+  <nav class="alt">
+    <button data-e="sinyal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Sinyaller<span class="rozet" id="rz" hidden></span></button>
+    <button data-e="hisse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Hisseler</button>
+    <button data-e="izle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>İzleme</button>
+  </nav>
+</div>
+<div id="detay">
+  <div class="dust"><button class="geri" id="geri">‹</button><div class="ad" id="dad"></div><a class="tv" id="tvlink" target="_blank" rel="noopener">TradingView ↗</a></div>
+  <div id="dicerik">
+    <div class="fiyatbas" id="dfiyat"></div>
+    <div class="legend num" id="legend"></div>
+    <div id="grafik"></div>
+    <div class="gsec" id="gsec"></div>
+    <div class="dpad">
+      <div class="sekmeler" id="sekmeler"><button data-s="sinyal">Sinyal</button><button data-s="analiz">Analiz</button><button data-s="gecmis">Geçmiş</button></div>
+      <div id="sekme"></div>
+      <div class="uyari">Veri yaklaşık 15 dk gecikmeli · Yatırım tavsiyesi değildir</div>
+    </div>
+  </div>
+</div>
+<script type="application/json" id="veri">__VERI__</script>
+<script>
+const V=JSON.parse(document.getElementById('veri').textContent);
+const H=Object.fromEntries(V.hisseler.map(h=>[h.hisse,h]));
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const tl=(x,d=2)=>x==null?'—':Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d});
+const yuzde=x=>x==null?'—':(x>=0?'+':'')+tl(x)+'%';
+const sinif=x=>x>=0?'up':'dn';
+const durum={get(k,d){try{return localStorage.getItem('bs_'+k)??d}catch(e){return d}},set(k,v){try{localStorage.setItem('bs_'+k,v)}catch(e){}}};
+function renk(ad){let h=0;for(const c of ad)h=(h*31+c.charCodeAt(0))%360;return `hsl(${h} 55% 42%)`}
+function av(ad){return `<div class="av" style="background:${renk(ad)}">${esc(ad.slice(0,2))}</div>`}
+function guvenRenk(g){return g>=70?'var(--up)':g>=50?'var(--wa)':'var(--mu)'}
+function guvenAd(g){return g>=70?'Güçlü':g>=50?'Orta':'Zayıf'}
+function ne(s){return s.once===0?'son mumda':s.once+' mum önce'}
+
+// üst bilgi
+$('#seans').className='seans'+(V.seans?' acik':'');$('#seans span').textContent=(V.seans?'Seans açık':'Seans kapalı')+' · '+V.guncelleme;
+$('#piyasa').innerHTML=V.bist100?`BIST 100<div class="num">${tl(V.bist100.fiyat,0)} <span class="${sinif(V.bist100.degisim)}">${yuzde(V.bist100.degisim)}</span></div>`:'';
+
+const guncel=V.hisseler.filter(h=>h.guncel).sort((a,b)=>b.guncel.guven-a.guncel.guven||a.guncel.once-b.guncel.once);
+if(guncel.length){$('#rz').hidden=false;$('#rz').textContent=guncel.length}
+
+function sinyalKarti(h){const s=h.guncel,t=s.tur.toLowerCase();return `
+<div class="kart" data-h="${h.hisse}">
+ <div class="satir1">${av(h.hisse)}<div class="ad"><b>${h.hisse}</b><small>${s.saat} · ${ne(s)}</small></div>
+  <div class="sag"><span class="tur ${t}">${s.tur}</span></div></div>
+ <div class="guven">Güven<div class="bar"><i style="width:${s.guven}%;background:${guvenRenk(s.guven)}"></i></div><b>${s.guven}</b>${guvenAd(s.guven)}</div>
+ <div class="sebep">${esc(s.sebepler.join(' + '))}</div>
+ <div class="ucl num"><div><small>Fiyat</small><b>${tl(h.fiyat)}</b></div><div><small>Stop</small><b class="dn">${tl(s.stop)}</b></div><div><small>Hedef</small><b class="up">${tl(s.hedef)}</b></div></div>
+</div>`}
+
+function ekranSinyal(){
+  const al=guncel.filter(h=>h.guncel.yon>0).length;
+  let x=`<h2>Sinyaller</h2><div class="ozet num"><div><small>AL</small><b class="up">${al}</b></div><div><small>SAT</small><b class="dn">${guncel.length-al}</b></div>
+   <div><small>Geçmiş isabet</small><b>${V.isabet==null?'—':'%'+V.isabet}</b></div></div>`;
+  x+=guncel.length?`<div class="alt-baslik">Güncel · güven ${V.min_guven}+</div>`+guncel.map(sinyalKarti).join('')
+   :`<div class="alt-baslik">Güncel</div><div class="bos"><b>Şu an sinyal yok</b>Son ${V.geriye} mumda güven puanı ${V.min_guven} üstü AL/SAT oluşmadı. Formasyonları İzleme sekmesinden takip edebilirsin.</div>`;
+  return x}
+
+let filtre=durum.get('filtre','tumu');
+function hisseSatiri(h){
+  let alt='';
+  if(h.guncel)alt=`<span class="etiket ${h.guncel.tur.toLowerCase()}">${h.guncel.tur} ${h.guncel.guven}</span>`;
+  else{const f=h.formlar.find(f=>f.durum==='oluşuyor');if(f)alt=`<span class="etiket fo">${esc(f.ad)}</span>`}
+  return `<div class="satir1" data-h="${h.hisse}">${av(h.hisse)}<div class="ad"><b>${h.hisse}${alt}</b><small>RSI ${tl(h.rsi,0)} · Trend ${h.trend.toLowerCase()}</small></div>
+   <div class="sag num"><b>${tl(h.fiyat)}</b><span class="pill ${sinif(h.degisim)}">${yuzde(h.degisim)}</span></div></div>`}
+function ekranHisse(){
+  let l=[...V.hisseler];
+  if(filtre==='sinyal')l=l.filter(h=>h.guncel);
+  if(filtre==='yukselen')l.sort((a,b)=>b.degisim-a.degisim);
+  if(filtre==='dusen')l.sort((a,b)=>a.degisim-b.degisim);
+  const c=(k,a)=>`<button class="chip${filtre===k?' on':''}" data-f="${k}">${a}</button>`;
+  return `<h2>Hisseler</h2><div class="chips">${c('tumu','Tümü')}${c('sinyal','Sinyal verenler')}${c('yukselen','Yükselenler')}${c('dusen','Düşenler')}</div>`+
+   (l.length?`<div class="liste">${l.map(hisseSatiri).join('')}</div>`:`<div class="bos">Bu filtrede hisse yok</div>`)}
+
+function ekranIzle(){
+  const k=[];V.hisseler.forEach(h=>h.formlar.filter(f=>f.durum==='oluşuyor').forEach(f=>k.push([h,f])));
+  let x=`<h2>İzleme</h2><div class="not" style="margin:-4px 0 12px">Oluşmakta olan formasyonlar. Kırılım olursa güven puanıyla birlikte Sinyaller'e düşer.</div>`;
+  if(!k.length)return x+`<div class="bos"><b>Oluşan formasyon yok</b>Takip listendeki hisselerde şu an tamamlanmamış formasyon görünmüyor.</div>`;
+  return x+k.map(([h,f])=>{const yon=f.yon>0?'Yukarı kırılım beklenir':f.yon<0?'Aşağı kırılım beklenir':'Yön belirsiz';
+   const ref=f.ref?` · kritik seviye ${tl(f.ref)}`:'';
+   return `<div class="kart" data-h="${h.hisse}"><div class="satir1">${av(h.hisse)}<div class="ad"><b>${h.hisse}<span class="etiket fo">${esc(f.ad)}</span></b>
+    <small>${yon}${ref}</small></div><div class="sag num"><b>${tl(h.fiyat)}</b><span class="pill ${sinif(h.degisim)}">${yuzde(h.degisim)}</span></div></div></div>`}).join('')}
+
+let ekran=durum.get('ekran','sinyal');
+function ciz(){
+  document.querySelectorAll('nav.alt button').forEach(b=>b.classList.toggle('on',b.dataset.e===ekran));
+  $('#ekran').innerHTML=(ekran==='hisse'?ekranHisse():ekran==='izle'?ekranIzle():ekranSinyal())+`<div class="uyari">Veri yaklaşık 15 dk gecikmeli · Yatırım tavsiyesi değildir</div>`;
+}
+document.querySelector('nav.alt').onclick=e=>{const b=e.target.closest('button');if(!b)return;ekran=b.dataset.e;durum.set('ekran',ekran);ciz();$('#ekran').scrollTop=0};
+$('#ekran').onclick=e=>{const f=e.target.closest('[data-f]');if(f){filtre=f.dataset.f;durum.set('filtre',filtre);ciz();return}
+  const h=e.target.closest('[data-h]');if(h)detayAc(h.dataset.h)};
+
+// ---------- detay ----------
+let chart=null,ro=null,secili=null,sekme=durum.get('sekme','sinyal');
+const gor=JSON.parse(durum.get('gor','{"ema":true,"sev":true,"form":true,"sin":true}'));
+function detayAc(ad){
+  const h=H[ad];if(!h)return;secili=ad;durum.set('detay',ad);
+  $('#dad').innerHTML=`<b>${ad}</b><small style="color:var(--mu);font-size:12px">${V.periyot} grafik</small>`;
+  $('#tvlink').href='https://tr.tradingview.com/chart/?symbol=BIST%3A'+encodeURIComponent(ad);
+  $('#dfiyat').innerHTML=`<span class="buyuk num">${tl(h.fiyat)}</span><span class="pill ${sinif(h.degisim)} num">${yuzde(h.degisim)}</span>`;
+  $('#detay').classList.add('ac');$('#dicerik').scrollTop=0;
+  setTimeout(()=>grafikKur(h),30);sekmeCiz();
+}
+$('#geri').onclick=()=>{$('#detay').classList.remove('ac');durum.set('detay','');if(chart){chart.remove();chart=null}};
+
+function grafikKur(h){
+  if(chart){chart.remove();chart=null}
+  const el=$('#grafik');
+  if(!window.LightweightCharts){el.innerHTML='<div class="bos" style="margin:0 16px">Grafik kütüphanesi yüklenemedi. Sayfayı yenile.</div>';return}
+  chart=LightweightCharts.createChart(el,{width:el.clientWidth,height:360,
+    layout:{background:{type:'solid',color:'transparent'},textColor:'#8b93a3',fontFamily:'Inter',fontSize:11},
+    grid:{vertLines:{color:'rgba(255,255,255,.04)'},horzLines:{color:'rgba(255,255,255,.04)'}},
+    rightPriceScale:{borderVisible:false,scaleMargins:{top:.08,bottom:.24}},
+    timeScale:{borderVisible:false,timeVisible:true,secondsVisible:false,rightOffset:4,barSpacing:7},
+    crosshair:{mode:0,vertLine:{color:'#5d6575',labelBackgroundColor:'#252a36'},horzLine:{color:'#5d6575',labelBackgroundColor:'#252a36'}},
+    localization:{locale:'tr-TR',priceFormatter:p=>tl(p)}});
+  const mum=chart.addCandlestickSeries({upColor:'#16c784',downColor:'#ea3943',borderVisible:false,wickUpColor:'#16c784',wickDownColor:'#ea3943',priceLineColor:'#6c8cff'});
+  mum.setData(h.mumlar.map(m=>({time:m[0],open:m[1],high:m[2],low:m[3],close:m[4]})));
+  const hacim=chart.addHistogramSeries({priceScaleId:'h',priceFormat:{type:'volume'},lastValueVisible:false,priceLineVisible:false});
+  chart.priceScale('h').applyOptions({scaleMargins:{top:.82,bottom:0}});
+  hacim.setData(h.mumlar.map(m=>({time:m[0],value:m[5],color:m[4]>=m[1]?'rgba(22,199,132,.35)':'rgba(234,57,67,.35)'})));
+  const cizgi=(renk,w=1)=>chart.addLineSeries({color:renk,lineWidth:w,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false});
+  const emalar=[[h.ema20,'#38bdf8'],[h.ema50,'#f5a524'],[h.ema200,'#b48cff']].map(([d,r])=>{const s=cizgi(r);s.setData(d.map(p=>({time:p[0],value:p[1]})));return s});
+  const formSeri=[];h.formlar.forEach(f=>f.cizgiler.forEach(c=>{const s=cizgi(f.yon<0?'#ff7a85':'#b48cff',2);s.setData([{time:c[0],value:c[1]},{time:c[2],value:c[3]}]);formSeri.push(s)}));
+  let sevCizgi=[],slCizgi=[];
+  const lo=Math.min(...h.mumlar.map(m=>m[3]))*.97,hi=Math.max(...h.mumlar.map(m=>m[2]))*1.03;
+  function uygula(){
+    emalar.forEach(s=>s.applyOptions({visible:gor.ema}));formSeri.forEach(s=>s.applyOptions({visible:gor.form}));
+    sevCizgi.forEach(p=>mum.removePriceLine(p));sevCizgi=[];slCizgi.forEach(p=>mum.removePriceLine(p));slCizgi=[];
+    if(gor.sev)h.seviyeler.filter(s=>s>lo&&s<hi).forEach(s=>sevCizgi.push(mum.createPriceLine({price:s,color:s<h.fiyat?'rgba(22,199,132,.55)':'rgba(234,57,67,.55)',lineWidth:1,lineStyle:2,axisLabelVisible:false})));
+    const g=h.guncel;
+    if(gor.sin&&g){slCizgi.push(mum.createPriceLine({price:g.stop,color:'#ea3943',lineWidth:1,lineStyle:0,title:'Stop'}));
+      slCizgi.push(mum.createPriceLine({price:g.hedef,color:'#16c784',lineWidth:1,lineStyle:0,title:'Hedef'}))}
+    mum.setMarkers(gor.sin?h.sinyaller.map(s=>({time:s.t,position:s.yon>0?'belowBar':'aboveBar',color:s.yon>0?'#16c784':'#ea3943',
+      shape:s.yon>0?'arrowUp':'arrowDown',text:s.tur+' '+s.guven})):[]);
+  }
+  uygula();
+  const n=h.mumlar.length,aralik={'1G':h.bar_gun,'3G':h.bar_gun*3,'1H':h.bar_gun*5,'Tümü':n};
+  let sec=durum.get('aralik','3G');
+  function aralikUygula(){const k=Math.min(aralik[sec]||n,n);chart.timeScale().setVisibleLogicalRange({from:n-k-.5,to:n+3})}
+  aralikUygula();
+  const gs=$('#gsec');
+  const t=(k,a,on)=>`<button class="chip${on?' on':''}" data-k="${k}">${a}</button>`;
+  function gsecCiz(){gs.innerHTML=Object.keys(aralik).map(k=>t('a:'+k,k,sec===k)).join('')+'<span class="ayr"></span>'+
+    t('g:sin','AL/SAT',gor.sin)+t('g:sev','Seviyeler',gor.sev)+t('g:form','Formasyon',gor.form)+t('g:ema','EMA',gor.ema)}
+  gsecCiz();
+  gs.onclick=e=>{const b=e.target.closest('[data-k]');if(!b)return;const[tip,k]=b.dataset.k.split(':');
+    if(tip==='a'){sec=k;durum.set('aralik',k);aralikUygula()}else{gor[k]=!gor[k];durum.set('gor',JSON.stringify(gor));uygula()}gsecCiz()};
+  const son=h.mumlar[n-1];
+  const lg=m=>m?`A <b>${tl(m[1])}</b> Y <b>${tl(m[2])}</b> D <b>${tl(m[3])}</b> K <b class="${m[4]>=m[1]?'up':'dn'}">${tl(m[4])}</b> · Hacim ${tl(m[5],0)}`:'';
+  const idx=Object.fromEntries(h.mumlar.map(m=>[m[0],m]));
+  $('#legend').innerHTML=lg(son);
+  chart.subscribeCrosshairMove(p=>{$('#legend').innerHTML=lg(p&&p.time?idx[p.time]:son)});
+  if(ro)ro.disconnect();ro=new ResizeObserver(()=>chart&&chart.applyOptions({width:el.clientWidth}));ro.observe(el);
+}
+
+function sekmeCiz(){
+  document.querySelectorAll('#sekmeler button').forEach(b=>b.classList.toggle('on',b.dataset.s===sekme));
+  const h=H[secili];let x='';
+  if(sekme==='sinyal'){
+    const s=h.guncel||null;
+    if(s){x=`<div class="kart" style="cursor:default"><div class="satir1"><span class="tur ${s.tur.toLowerCase()}">${s.tur}</span>
+      <div class="ad"><small>${s.saat} · ${ne(s)} · sinyal fiyatı ${tl(s.fiyat)}</small></div></div>
+      <div class="guven">Güven<div class="bar"><i style="width:${s.guven}%;background:${guvenRenk(s.guven)}"></i></div><b>${s.guven}</b>${guvenAd(s.guven)}</div>
+      <div class="sebep">${esc(s.sebepler.join(' + '))}</div>
+      <div class="neden">${s.arti.map(a=>`<div class="p">${esc(a)}</div>`).join('')}${s.eksi.map(a=>`<div class="n">${esc(a)}</div>`).join('')}</div>
+      <div class="ucl num"><div><small>Stop</small><b class="dn">${tl(s.stop)}</b></div><div><small>Hedef</small><b class="up">${tl(s.hedef)}</b></div><div><small>Risk/Kazanç</small><b>${tl(s.rk,1)}</b></div></div></div>`}
+    else{const l=h.son_sinyal;x=`<div class="bos"><b>Şu an sinyal yok</b>${l?`Son sinyal: ${l.saat} · ${l.tur} (güven ${l.guven}) → ${esc(l.sonuc)}`:'Bu dönemde güven eşiğini geçen sinyal olmadı.'}</div>`}
+  }else if(sekme==='analiz'){
+    x=`<div class="grid num">
+      <div><small>RSI</small><b class="${h.rsi>70?'dn':h.rsi<30?'up':''}">${tl(h.rsi,0)}</b></div>
+      <div><small>MACD</small><b class="${sinif(h.macd)}">${h.macd>=0?'Pozitif':'Negatif'}</b></div>
+      <div><small>Ana trend</small><b class="${h.trend==='Yukarı'?'up':'dn'}">${h.trend}</b></div>
+      <div><small>Oynaklık (ATR)</small><b>%${tl(h.atr)}</b></div>
+      <div><small>Yakın destek</small><b class="up">${tl(h.destek)}</b></div>
+      <div><small>Yakın direnç</small><b class="dn">${tl(h.direnc)}</b></div></div>`;
+    x+=`<div class="alt-baslik">Formasyonlar</div>`+(h.formlar.length?`<div class="liste">${h.formlar.map(f=>`<div class="satir1" style="cursor:default">
+      <div class="ad"><b style="font-size:14px">${esc(f.ad)}</b><small>${f.yon>0?'Yukarı beklenti':f.yon<0?'Aşağı beklenti':'Yön belirsiz'}${f.ref?' · kritik '+tl(f.ref):''}${f.hedef?' · hedef '+tl(f.hedef):''}</small></div>
+      <span class="etiket ${f.durum==='kırıldı'?(f.yon>0?'al':'sat'):'fo'}">${f.durum}</span></div>`).join('')}</div>`:`<div class="bos">Şu an formasyon yok</div>`);
+  }else{
+    const i=h.ist;
+    x=`<div class="sayilar num"><div><small>SİNYAL</small><b>${i.toplam}</b></div><div><small>HEDEF</small><b class="up">${i.hedef}</b></div>
+      <div><small>STOP</small><b class="dn">${i.stop}</b></div><div><small>İSABET</small><b>${i.isabet==null?'—':'%'+i.isabet}</b></div></div>`;
+    const l=[...h.sinyaller].reverse().slice(0,12);
+    x+=l.length?`<div class="liste gecmis">${l.map(s=>`<div class="satir1" style="cursor:default"><span class="etiket ${s.tur.toLowerCase()}" style="margin:0">${s.tur}</span>
+      <div class="ad"><small style="color:var(--tx)">${s.saat}</small><small> · güven ${s.guven}</small></div>
+      <div class="sag num"><b style="font-size:13px" class="${s.sonuc==='hedef'?'up':s.sonuc==='stop'?'dn':''}">${esc(s.sonuc)}</b><small style="color:var(--mu)">${yuzde(s.getiri)}</small></div></div>`).join('')}</div>`
+      :`<div class="bos">Bu dönemde sinyal yok</div>`;
+    x+=`<div class="not">Ortalama sonuç ${i.ort==null?'—':yuzde(i.ort)}. Aynı kurallar bu hissenin geçmiş verisine uygulandı; her sinyalden sonra ${V.ufuk} mum içinde önce hedefe mi stopa mı gittiğine bakıldı. Geçmişte tutması gelecekte tutacağını garanti etmez.</div>`;
+  }
+  $('#sekme').innerHTML=x;
+}
+$('#sekmeler').onclick=e=>{const b=e.target.closest('button');if(!b)return;sekme=b.dataset.s;durum.set('sekme',sekme);sekmeCiz()};
+
+ciz();
+const d=durum.get('detay','');if(d&&H[d])detayAc(d);
+</script></body></html>"""
 
 
-def tradingview(hisse: str, periyot: str, yukseklik: int = 620):
-    """TradingView gelişmiş grafiği: tüm göstergeler, çizim araçları, zaman dilimleri, tam ekran."""
-    ayar = {
-        "autosize": True,
-        "symbol": f"BIST:{hisse}",
-        "interval": TV_PERIYOT.get(periyot, "15"),
-        "timezone": "Europe/Istanbul",
-        "theme": "dark",
-        "style": "1",
-        "locale": "tr",
-        "backgroundColor": RENK["zemin"],
-        "gridColor": RENK["cizgi"],
-        "withdateranges": True,
-        "allow_symbol_change": True,
-        "hide_side_toolbar": False,
-        "details": False,
-        "calendar": False,
-        "save_image": True,
-        "studies": ["Volume@tv-basicstudies", "RSI@tv-basicstudies", "MACD@tv-basicstudies",
-                    "MAExp@tv-basicstudies", "BB@tv-basicstudies"],
-        "support_host": "https://www.tradingview.com",
-    }
-    import json
-    import streamlit.components.v1 as components
-    components.html(f"""
-<div class="tradingview-widget-container" style="height:{yukseklik}px;width:100%">
-  <div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
-  <script type="text/javascript" async
-    src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js">
-  {json.dumps(ayar)}
-  </script>
-</div>""", height=yukseklik + 10)
-    st.caption("Sol menüden çizim araçları, üstten zaman dilimi ve gösterge ekleyebilirsin. "
-               "Sağ üstteki simgeyle tam ekran açılır.")
+def arayuz_html(paket: dict) -> str:
+    veri = json.dumps(paket, ensure_ascii=False).replace("</", "<\\/")
+    return ARAYUZ.replace("__VERI__", veri)
 
 
 # ---------- Sayfa ----------
-st.markdown(STIL, unsafe_allow_html=True)
+st.markdown("""
+<style>
+#MainMenu, footer, header[data-testid="stHeader"] {visibility:hidden;height:0}
+.stApp {background:#0b0d12}
+.block-container {padding:0 !important; max-width:100% !important}
+div[data-testid="stExpander"] {margin:0 8px; border:0}
+div[data-testid="stExpander"] details {border:0; background:#14171f; border-radius:12px}
+div[data-testid="stExpander"] summary {font-size:13px; color:#8b93a3; padding:6px 12px}
+iframe {height:calc(100dvh - 58px) !important; display:block}
+div[data-testid="stProgress"] {padding:0 12px}
+</style>""", unsafe_allow_html=True)
 
-acik = seans_acik_mi()
-st.markdown(
-    f'<div class="ust"><div class="logo">BIST<span>·</span>Sinyal</div>'
-    f'<div class="seans {"acik" if acik else "kapali"}">{"● Seans açık" if acik else "○ Seans kapalı"}</div></div>',
-    unsafe_allow_html=True)
-
-with st.expander("⚙️ Ayarlar"):
+with st.expander("⚙️ Ayarlar · hisseler, periyot, güven"):
     hisse_metni = st.text_input("Hisseler (virgülle ayır)", VARSAYILAN_HISSELER)
     periyot_adi = st.selectbox("Mum periyodu", list(PERIYOTLAR))
     min_guven = st.slider("Minimum güven puanı", 20, 90, VARSAYILAN_MIN_GUVEN, 5,
@@ -790,10 +869,19 @@ periyot, gecmis = PERIYOTLAR[periyot_adi]
 
 @st.fragment(run_every=YENILEME)
 def panel():
-    son_mum_kapali = not seans_acik_mi()
+    acik = seans_acik_mi()
     sonuclar, hatalar = [], []
-    ilerleme = st.progress(0.0, text="BIST100 yönü alınıyor...")
+    ilerleme = st.progress(0.0, text="BIST 100 alınıyor...")
     piyasa = piyasa_yonu(periyot, gecmis)
+    bist = None
+    try:
+        x = veri_cek("XU100.IS", periyot, gecmis)
+        if len(x):
+            bugun = x[x.index.date == x.index[-1].date()]
+            bist = dict(fiyat=_r(x["Close"].iloc[-1], 2),
+                        degisim=_r((x["Close"].iloc[-1] / bugun["Open"].iloc[0] - 1) * 100, 2))
+    except Exception:
+        pass
     for n, h in enumerate(hisseler, 1):
         ilerleme.progress(n / max(len(hisseler), 1), text=f"{h} inceleniyor...")
         try:
@@ -801,86 +889,27 @@ def panel():
             if len(ham) < 80:
                 hatalar.append(h)
             else:
-                sonuclar.append(analiz(h, ham, piyasa, son_mum_kapali))
+                sonuclar.append(analiz(h, ham, piyasa, not acik))
         except Exception:
             hatalar.append(h)
     ilerleme.empty()
-
-    st.markdown(f'<div class="altbilgi">Güncellendi {dt.datetime.now(TZ):%H:%M} · '
-                f'{periyot_adi} mumlar · {YENILEME.seconds // 60} dk\'da bir yenilenir</div>',
-                unsafe_allow_html=True)
     if hatalar:
         st.warning("Veri alınamadı: " + ", ".join(hatalar))
     if not sonuclar:
+        st.error("Hiçbir hissenin verisi alınamadı. Biraz sonra tekrar dene.")
         return
 
-    filtreli = {a["hisse"]: filtrele(a["sinyaller"], min_guven) for a in sonuclar}
-    guncel = {}
+    paketler, tum = [], []
     for a in sonuclar:
-        yeni = [s for s in filtreli[a["hisse"]] if s["i"] >= a["n"] - GERIYE_BAK_MUM]
-        if yeni:
-            guncel[a["hisse"]] = yeni[-1]
-    kartlar = sorted(((a, guncel[a["hisse"]]) for a in sonuclar if a["hisse"] in guncel),
-                     key=lambda t: (-t[1]["guven"], -t[1]["i"]))
-
-    genel = istatistik([s for v in filtreli.values() for s in v])
-    piyasa_son = piyasa.iloc[-1] if len(piyasa) else 0
-    al_say = sum(s["yon"] > 0 for s in guncel.values())
-    st.markdown(
-        f'<div class="ozet"><div><small>AL</small><b class="arti">{al_say}</b></div>'
-        f'<div><small>SAT</small><b class="eksi">{len(guncel) - al_say}</b></div>'
-        f'<div><small>İsabet</small><b>{"%" + format(genel["isabet"], ".0f") if genel["isabet"] is not None else "—"}</b></div>'
-        f'<div><small>BIST100</small><b class="{"arti" if piyasa_son > 0 else "eksi"}">'
-        f'{"↑" if piyasa_son > 0 else ("↓" if piyasa_son < 0 else "—")}</b></div></div>',
-        unsafe_allow_html=True)
-
-    st.markdown('<div class="baslik">Sinyaller</div>', unsafe_allow_html=True)
-    if kartlar:
-        st.markdown("".join(sinyal_karti(a, s) for a, s in kartlar), unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="bos">Son {GERIYE_BAK_MUM} mumda güven puanı {min_guven} üstü sinyal yok</div>',
-                    unsafe_allow_html=True)
-
-    izlenen = [(a["hisse"], f) for a in sonuclar for f in a["formlar"] if f["durum"] == "oluşuyor"]
-    if izlenen:
-        st.markdown('<div class="baslik">İzlemede · oluşan formasyonlar</div>', unsafe_allow_html=True)
-        st.markdown(form_listesi(izlenen), unsafe_allow_html=True)
-
-    st.markdown('<div class="baslik">Grafik</div>', unsafe_allow_html=True)
-    isimler = [a["hisse"] for a in sonuclar]
-    onceki = st.session_state.get("secili")
-    if onceki not in isimler:
-        onceki = kartlar[0][0]["hisse"] if kartlar else isimler[0]
-    secim = st.pills("Hisse", isimler, default=onceki, label_visibility="collapsed") or onceki
-    st.session_state["secili"] = secim
-    a = next(x for x in sonuclar if x["hisse"] == secim)
-    sekme1, sekme2 = st.tabs(["📈 Gelişmiş grafik", "🎯 Sinyal grafiği"])
-    with sekme1:
-        tradingview(secim, periyot)
-    with sekme2:
-        st.plotly_chart(grafik(a, filtreli[secim]), use_container_width=True, config={"displayModeBar": False})
-    st.markdown(
-        f'<div class="bilgi">'
-        f'<div>Fiyat<b>{sayi(a["fiyat"])}</b></div>'
-        f'<div>Gün<b class="{"arti" if a["degisim"] >= 0 else "eksi"}">{a["degisim"]:+.2f}%</b></div>'
-        f'<div>RSI<b>{a["rsi"]:.0f}</b></div>'
-        f'<div>MACD<b class="{"arti" if a["macd"] >= 0 else "eksi"}">{"Pozitif" if a["macd"] >= 0 else "Negatif"}</b></div>'
-        f'<div>Trend<b class="{"arti" if a["trend"] == "Yukarı" else "eksi"}">{a["trend"]}</b></div>'
-        f'<div>Oynaklık<b>%{a["atr_yuzde"]:.1f}</b></div>'
-        f'<div>Destek<b class="arti">{sayi(a["destek"])}</b></div>'
-        f'<div>Direnç<b class="eksi">{sayi(a["direnc"])}</b></div></div>',
-        unsafe_allow_html=True)
-    if a["formlar"]:
-        st.markdown('<div class="baslik">Formasyonlar</div>', unsafe_allow_html=True)
-        st.markdown(form_listesi([(a["hisse"], f) for f in a["formlar"]]), unsafe_allow_html=True)
-    st.markdown(f'<div class="baslik">Geçmiş test · {secim}</div>', unsafe_allow_html=True)
-    st.markdown(test_kutusu(a, filtreli[secim]), unsafe_allow_html=True)
-
-    st.markdown('<div class="baslik">Tüm hisseler</div>', unsafe_allow_html=True)
-    st.markdown(hisse_listesi(sonuclar, guncel), unsafe_allow_html=True)
-
-    st.markdown('<div class="uyari">Veri yaklaşık 15 dk gecikmelidir · Yatırım tavsiyesi değildir</div>',
-                unsafe_allow_html=True)
+        f = filtrele(a["sinyaller"], min_guven)
+        tum += f
+        yeni = [s for s in f if s["i"] >= a["n"] - GERIYE_BAK_MUM]
+        paketler.append(hisse_paketi(a, f, yeni[-1] if yeni else None))
+    genel = istatistik(tum)
+    paket = dict(hisseler=paketler, seans=acik, guncelleme=f"{dt.datetime.now(TZ):%H:%M}",
+                 bist100=bist, isabet=_r(genel["isabet"], 0), min_guven=min_guven,
+                 geriye=GERIYE_BAK_MUM, ufuk=TEST_UFKU, periyot=periyot_adi)
+    components.html(arayuz_html(paket), height=760, scrolling=False)
 
 
 panel()
