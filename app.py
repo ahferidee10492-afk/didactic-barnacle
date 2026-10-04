@@ -729,6 +729,45 @@ def grafik(a: dict, sinyaller: list[dict], mum_sayisi: int = 120) -> go.Figure:
     return fig
 
 
+TV_PERIYOT = {"5m": "5", "15m": "15", "30m": "30", "1h": "60"}
+
+
+def tradingview(hisse: str, periyot: str, yukseklik: int = 620):
+    """TradingView gelişmiş grafiği: tüm göstergeler, çizim araçları, zaman dilimleri, tam ekran."""
+    ayar = {
+        "autosize": True,
+        "symbol": f"BIST:{hisse}",
+        "interval": TV_PERIYOT.get(periyot, "15"),
+        "timezone": "Europe/Istanbul",
+        "theme": "dark",
+        "style": "1",
+        "locale": "tr",
+        "backgroundColor": RENK["zemin"],
+        "gridColor": RENK["cizgi"],
+        "withdateranges": True,
+        "allow_symbol_change": True,
+        "hide_side_toolbar": False,
+        "details": False,
+        "calendar": False,
+        "save_image": True,
+        "studies": ["Volume@tv-basicstudies", "RSI@tv-basicstudies", "MACD@tv-basicstudies",
+                    "MAExp@tv-basicstudies", "BB@tv-basicstudies"],
+        "support_host": "https://www.tradingview.com",
+    }
+    import json
+    import streamlit.components.v1 as components
+    components.html(f"""
+<div class="tradingview-widget-container" style="height:{yukseklik}px;width:100%">
+  <div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
+  <script type="text/javascript" async
+    src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js">
+  {json.dumps(ayar)}
+  </script>
+</div>""", height=yukseklik + 10)
+    st.caption("Sol menüden çizim araçları, üstten zaman dilimi ve gösterge ekleyebilirsin. "
+               "Sağ üstteki simgeyle tam ekran açılır.")
+
+
 # ---------- Sayfa ----------
 st.markdown(STIL, unsafe_allow_html=True)
 
@@ -815,7 +854,11 @@ def panel():
     secim = st.pills("Hisse", isimler, default=onceki, label_visibility="collapsed") or onceki
     st.session_state["secili"] = secim
     a = next(x for x in sonuclar if x["hisse"] == secim)
-    st.plotly_chart(grafik(a, filtreli[secim]), use_container_width=True, config={"displayModeBar": False})
+    sekme1, sekme2 = st.tabs(["📈 Gelişmiş grafik", "🎯 Sinyal grafiği"])
+    with sekme1:
+        tradingview(secim, periyot)
+    with sekme2:
+        st.plotly_chart(grafik(a, filtreli[secim]), use_container_width=True, config={"displayModeBar": False})
     st.markdown(
         f'<div class="bilgi">'
         f'<div>Fiyat<b>{sayi(a["fiyat"])}</b></div>'
