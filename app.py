@@ -10,16 +10,20 @@ Borsa İstanbul'daki tüm likit hisseleri tarar. 15 dakikalık grafikte:
 Her sinyale 0-100 güven puanı verir; alıcıların gerçekten olduğu hacimli bölgelerde ekstra puan verir.
 Sinyaller hedef ya da stop gelene kadar aktif olarak takip edilir.
 Canlı bot: sanal bütçeyle gerçek seansta sinyallere otomatik girer/çıkar, tutarlılığını ölçer.
+Kalıcı kayıt: Streamlit Secrets'a GITHUB_TOKEN ve GITHUB_REPO eklenirse bot geçmişi GitHub'da 'bot-veri' dalında saklanır.
 
 Yatırım tavsiyesi değildir.
 """
 
 import bisect
 import datetime as dt
+import base64
 import json
 import os
 import threading
 import time
+import urllib.error
+import urllib.request
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -1050,7 +1054,7 @@ main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:to
 .istat div{background:var(--card);border:1px solid var(--ln);border-radius:16px;padding:12px}.istat b{display:block;font-size:17px;font-weight:800;margin-top:2px;letter-spacing:-.02em}
 .gauge{position:relative;width:220px;max-width:100%;margin:6px auto 0}
 .gauge svg{width:100%;display:block}.gauge .gd{animation:gd 1.6s cubic-bezier(.2,.8,.2,1) both}@keyframes gd{from{stroke-dasharray:0 100}}
-.gauge .gv{position:absolute;left:0;right:0;bottom:2px;text-align:center}.gauge .gv b{display:block;font-size:38px;font-weight:800;letter-spacing:-.04em;line-height:1}.gauge .gv span{font-size:12.5px;font-weight:800}
+.gauge .gv{position:absolute;left:0;right:0;bottom:14px;text-align:center}.gauge .gv b{display:block;font-size:38px;font-weight:800;letter-spacing:-.04em;line-height:1}.gauge .gv span{font-size:12.5px;font-weight:800}
 .bilesen>div{margin-top:12px}.bilesen .ust3{display:flex;justify-content:space-between;font-size:12.5px;font-weight:700}
 .bar{height:8px;border-radius:99px;background:var(--card2);margin-top:6px;overflow:hidden}.bar i{display:block;height:100%;border-radius:99px;background:var(--grad);transform-origin:left;animation:uza 1.2s cubic-bezier(.2,.8,.2,1) both}
 .donut{display:flex;align-items:center;gap:16px}.donut svg{width:96px;height:96px;transform:rotate(-90deg);flex:none}
@@ -1065,6 +1069,14 @@ main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:to
 .gunbar div{flex:1;max-width:28px;position:relative;height:100%}
 .gunbar i{position:absolute;left:0;right:0;border-radius:5px;animation:boy .9s cubic-bezier(.2,.8,.2,1) both}
 @keyframes boy{from{transform:scaleY(0)}}
+.kayit{display:flex;align-items:center;gap:10px;margin-top:12px;padding:11px 14px;border-radius:16px;font-size:12.5px;font-weight:700;cursor:pointer;border:1px solid var(--ln);background:var(--card)}
+.kayit .ki{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;flex:none;font-size:14px}
+.kayit.ok .ki{background:var(--ups);color:var(--up)}.kayit.uyar{border-color:rgba(255,181,71,.35);background:var(--was)}.kayit.uyar .ki{background:rgba(255,181,71,.25);color:var(--wa)}
+.kayit.hata{border-color:rgba(255,92,124,.35);background:var(--dns)}.kayit.hata .ki{background:rgba(255,92,124,.22);color:var(--dn)}
+.kayit small{display:block;color:var(--mu);font-weight:600;font-size:11.5px;margin-top:1px}
+.adimlar{counter-reset:a;margin:0;padding:0;list-style:none}.adimlar li{counter-increment:a;position:relative;padding:0 0 14px 40px;font-size:13px;line-height:1.55;font-weight:600}
+.adimlar li::before{content:counter(a);position:absolute;left:0;top:-2px;width:28px;height:28px;border-radius:10px;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-size:13px}
+.kod{display:block;background:var(--card2);border:1px solid var(--ln);border-radius:12px;padding:10px 12px;font:600 12px ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;margin-top:6px;user-select:all}
 .log>div{display:flex;gap:11px;padding:11px 14px;border-bottom:1px solid var(--ln2)}.log>div:last-child{border-bottom:0}
 .log .li{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;flex:none;font-size:13px}
 .log p{margin:0;font-size:12.5px;font-weight:600;line-height:1.45}.log small{display:block;color:var(--mu);font-size:11px;font-weight:700;margin-top:2px}
@@ -1399,17 +1411,36 @@ function ekranBot(){const a=B.ayar,kz=B.kz||0;
    <div id="botGrafik"></div>
    <div class="botalt"><div><small>Bugün</small><b>${B.bugun.islem}<span class="mu" style="font-size:12px">/${a.gunluk}</span></b><small>işlem</small></div><div><small>Açık</small><b>${B.poz.length}<span class="mu" style="font-size:12px">/${a.acik}</span></b><small>pozisyon</small></div><div><small>Nakit</small><b>${tl(B.nakit,0)}</b><small>₺</small></div></div>
    <div class="dugmeler"><button class="btn" data-bot="${B.aktif?'durdur':'baslat'}">${B.aktif?IK.dur+' Duraklat':IK.bas+' Başlat'}</button><button class="btn ana" data-botayar="1">${IK.ayar} Bot ayarları</button></div></div>`;
+  x+=kayitSerit();
   const b=(k,t)=>`<button data-bt="${k}" class="${bt===k?'on':''}">${t}</button>`;
   x+=`<div class="seg" style="margin-top:16px">${b('ozet','Özet')}${b('poz','Pozisyon'+(B.poz.length?' · '+B.poz.length:''))}${b('islem','İşlemler')}${b('gun','Günlük')}${b('log','Kayıt')}</div><div>${({ozet:botOzet,poz:botPoz,islem:botIslem,gun:botGun,log:botLog}[bt]||botOzet)()}</div>`;
   return x}
+function kayitSerit(){const k=B.kayit||{tip:'yerel'};
+  if(k.tip==='github'&&k.hazir&&!k.hata)return `<div class="kayit ok" data-kayitbilgi="1"><span class="ki">☁</span><div style="flex:1">Kalıcı kayıt açık<small>GitHub · ${esc(k.dal)} dalı · ${k.son?'son kayıt '+k.son:'ilk kayıt bekleniyor'}</small></div><span class="mu">›</span></div>`;
+  if(k.tip==='github')return `<div class="kayit hata" data-kayitbilgi="1"><span class="ki">!</span><div style="flex:1">GitHub'a kaydedilemiyor<small>${esc(k.hata||'Bağlantı bekleniyor')}</small></div><span class="mu">›</span></div>`;
+  return `<div class="kayit uyar" data-kayitbilgi="1"><span class="ki">⚠</span><div style="flex:1">Kalıcı kayıt kapalı<small>Uygulama yeniden başlarsa bot geçmişi silinir · kurmak için dokun</small></div><span class="mu">›</span></div>`}
+function kayitBilgi(){const k=B.kayit||{tip:'yerel'};$('#form').onclick=null;
+  const durum=k.tip==='github'?(k.hazir&&!k.hata?`<div class="kayit ok" style="cursor:default"><span class="ki">☁</span><div>Bağlı: ${esc(k.repo)}<small>${esc(k.dal)} dalındaki bot_canli.json · ${k.son?'son kayıt '+k.son:'ilk kayıt bekleniyor'}</small></div></div>`
+    :`<div class="kayit hata" style="cursor:default"><span class="ki">!</span><div>Hata<small>${esc(k.hata||'Bağlantı bekleniyor')}</small></div></div>`):'';
+  $('#form').innerHTML=`<div class="tutamak"></div><h2>Kalıcı kayıt</h2><p class="acik-not">Bot geçmişi GitHub deponda ayrı bir <b>bot-veri</b> dalında saklanır. Ayrı dal olduğu için site yeniden başlamaz; app.py güncellesen bile geçmiş kaybolmaz.</p>${durum}
+   <div class="bolum" style="margin-top:18px"><h3>${k.tip==='github'?'Kurulum adımları':'Telefondan 3 adımda kur'}</h3></div>
+   <ol class="adimlar">
+    <li>GitHub'da <b>Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token</b>. Repository access: <b>Only select repositories</b> → bu sitenin deposu. Permissions → <b>Contents: Read and write</b>. Oluştur ve token'ı kopyala.</li>
+    <li>Streamlit'te uygulamanın <b>⋮ → Settings → Secrets</b> bölümüne şunu yapıştır (kendi bilgilerinle):<span class="kod">GITHUB_TOKEN = "github_pat_..."
+GITHUB_REPO = "kullanici-adin/didactic-barnacle"</span></li>
+    <li><b>Save</b>'e bas. Uygulama kendini yeniden başlatır; Bot ekranında yeşil “Kalıcı kayıt açık” yazısını görürsün.</li></ol>
+   <p class="not">Token sadece bu depoya ve sadece dosya yazma iznine sahip olur. Bot verisi her işlemde ve seans boyunca 10 dakikada bir kaydedilir. Şu anki geçmiş, kurulumdan sonra ilk kayıtta GitHub'a taşınır (uygulama araya yeniden başlamazsa).</p>
+   <div class="dugmeler" style="padding:8px 0 0"><button class="btn" id="kb_kapat">Tamam</button></div>`;
+  sheetAc();$('#kb_kapat').onclick=sheetKapat}
 function botOzet(){const s=B.st||{},az=s.n<5;
   const sk=s.skor??0,renk=sk>=60?'up':sk>=45?'wa':'dn';
   const bil=[['Kazanma oranı',s.kazanma,s.kazanma==null?'—':'%'+tl(s.kazanma,0)],['Kâr faktörü',s.pf==null?null:Math.min(s.pf/2,1)*100,s.pf==null?'—':tl(s.pf,2)],
     ['Kârlı gün oranı',s.karli_gun,s.karli_gun==null?'—':'%'+tl(s.karli_gun,0)],['Düşüş kontrolü',Math.max(0,1-Math.abs(s.dd||0)/10)*100,yz(s.dd,1)]];
   let x=`<div class="kart pad"><div class="sat1"><div><b style="font-size:15px;font-weight:800">Tutarlılık skoru</b><div class="mu" style="font-size:12px;font-weight:600">Bot ne kadar istikrarlı kâr üretiyor</div></div><span class="rozet ${az?'':renk}">${esc(s.etiket)}</span></div>
     <div class="gauge"><svg viewBox="0 0 200 112"><path d="M18 102A82 82 0 0 1 182 102" fill="none" style="stroke:var(--card2)" stroke-width="16" stroke-linecap="round"/>
-     <path class="gd" d="M18 102A82 82 0 0 1 182 102" fill="none" stroke="url(#gGauge)" stroke-width="16" stroke-linecap="round" pathLength="100" stroke-dasharray="${az?0:sk} 100"/></svg>
-     <div class="gv"><b class="${az?'mu':renk}">${az?'—':say(sk)}</b><span class="mu">${az?`en az 5 işlem gerekli · şu an ${s.n}`:'100 üzerinden'}</span></div></div>
+     ${az?'':`<path class="gd" d="M18 102A82 82 0 0 1 182 102" fill="none" stroke="url(#gGauge)" stroke-width="16" stroke-linecap="round" pathLength="100" stroke-dasharray="${Math.max(sk,1)} 100"/>`}</svg>
+     <div class="gv"><b class="${az?'mu':renk}">${az?'—':say(sk)}</b></div></div>
+    <div class="mu" style="text-align:center;font-size:12.5px;font-weight:700;margin-top:6px">${az?`Skor için en az 5 kapanmış işlem gerekli · şu an ${s.n}`:'100 üzerinden'}</div>
     <div class="bilesen">${bil.map(([ad,v,yazi])=>`<div><div class="ust3"><span class="mu">${ad}</span><span>${yazi}</span></div><div class="bar"><i style="width:${Math.max(0,Math.min(v||0,100))}%"></i></div></div>`).join('')}</div></div>`;
   x+=`<div class="istat" style="margin-top:12px"><div><span class="lbl">İşlem</span><b>${say(s.n)}</b></div><div><span class="lbl">Kazanma</span><b>${s.kazanma==null?'—':'%'+tl(s.kazanma,0)}</b></div><div><span class="lbl">Kâr faktörü</span><b class="${(s.pf||0)>=1?'up':'dn'}">${s.pf==null?'—':tl(s.pf,2)}</b></div>
     <div><span class="lbl">Ort. R</span><b class="${yon(s.ortR||0)}">${s.ortR==null?'—':(s.ortR>=0?'+':'')+tl(s.ortR,2)}</b></div><div><span class="lbl">İşlem başı</span><b class="${yon(s.beklenti||0)}">${s.beklenti==null?'—':tlk(s.beklenti)}</b></div><div><span class="lbl">Maks. düşüş</span><b class="dn">${yz(s.dd,1)}</b></div></div>`;
@@ -1539,12 +1570,13 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now(
 $('#nav').onclick=e=>{const b=e.target.closest('button');if(b)git(b.dataset.e)};
 $('#ust').onclick=e=>{const t=e.target.closest('[data-mod],[data-git]');if(!t)return;const d=t.dataset;
   if(d.mod){M=d.mod;D.set('mod',M);ciz()}else if(d.git)git(d.git)};
-$('#ekran').onclick=e=>{const t=e.target.closest('[data-pf],[data-pg],[data-mf],[data-pt],[data-af],[data-adl],[data-bt],[data-bot],[data-botayar],[data-botkapat],[data-bothepsi],[data-git],[data-sek],[data-sektemizle],[data-kapat],[data-sil],[data-h]');if(!t)return;const d=t.dataset;
+$('#ekran').onclick=e=>{const t=e.target.closest('[data-pf],[data-pg],[data-mf],[data-pt],[data-af],[data-adl],[data-bt],[data-bot],[data-botayar],[data-kayitbilgi],[data-botkapat],[data-bothepsi],[data-git],[data-sek],[data-sektemizle],[data-kapat],[data-sil],[data-h]');if(!t)return;const d=t.dataset;
   if(d.pf){pf=d.pf;D.set('pf',pf);ciz()}else if(d.pg){pg=d.pg;D.set('pg',pg);ciz()}else if(d.mf){mf=d.mf;D.set('mf',mf);ciz()}else if(d.pt){pt=d.pt;D.set('pt',pt);ciz()}
   else if(d.af){af=d.af;D.set('af',af);ciz()}else if(d.adl){adl=d.adl;D.set('adl',adl);ciz()}
   else if(d.bt){bt=d.bt;D.set('bt',bt);ciz();sayAnim($('#ekran'))}
   else if(d.bot)ustGit('?bot='+d.bot)
   else if(d.botayar)botAyarAc()
+  else if(d.kayitbilgi)kayitBilgi()
   else if(d.botkapat){if(confirm('Bu pozisyon anlık fiyattan kapatılsın mı?'))ustGit('?bot=kapat&id='+encodeURIComponent(d.botkapat))}
   else if(d.bothepsi){if(confirm('Botun tüm açık pozisyonları kapatılsın mı?'))ustGit('?bot=hepsi')}
   else if(d.git){if(d.git==='sektor'){ekran='piyasa';pg='sektor';D.set('ekran',ekran);ciz(true)}else git(d.git)}
@@ -1876,9 +1908,116 @@ def _ep_dizi(df) -> np.ndarray:
     return pd.DatetimeIndex(df.index).as_unit("ns").asi8 // 10 ** 9
 
 
+class GitDepo:
+    """Bot verisini GitHub deposunda ayrı bir dalda saklar. Ayrı dal olduğu için Streamlit uygulamayı yeniden başlatmaz."""
+    API = "https://api.github.com"
+
+    def __init__(self, token: str, repo: str, dal: str = "bot-veri", yol: str = "bot_canli.json"):
+        self.token, self.repo, self.dal, self.yol = token, repo, dal, yol
+        self.sha = None
+        self.hazir = False        # uzaktaki veri başarıyla okunmadan asla yazılmaz (eski geçmişin üstüne yazmamak için)
+        self.son = None           # son başarılı kayıt zamanı
+        self.hata = None
+        self.son_deneme = 0.0
+
+    def _istek(self, yontem: str, yol: str, govde=None):
+        veri = json.dumps(govde).encode() if govde is not None else None
+        req = urllib.request.Request(self.API + yol, data=veri, method=yontem, headers={
+            "Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "borsa-radar-bot"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                icerik = r.read()
+                return r.status, (json.loads(icerik) if icerik else None)
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read() or b"null")
+            except Exception:  # noqa: BLE001
+                return e.code, None
+
+    @staticmethod
+    def _mesaj(g) -> str:
+        return (g or {}).get("message", "") if isinstance(g, dict) else ""
+
+    def _dal_hazirla(self):
+        k, g = self._istek("GET", f"/repos/{self.repo}/branches/{self.dal}")
+        if k == 200:
+            return
+        k, r = self._istek("GET", f"/repos/{self.repo}")
+        if k != 200:
+            raise RuntimeError(f"Depoya erişilemedi ({k} {self._mesaj(r)}) — GITHUB_REPO ve token izinlerini kontrol et")
+        k, ref = self._istek("GET", f"/repos/{self.repo}/git/ref/heads/{r['default_branch']}")
+        if k != 200:
+            raise RuntimeError(f"Ana dal okunamadı ({k} {self._mesaj(ref)})")
+        k, g = self._istek("POST", f"/repos/{self.repo}/git/refs",
+                           {"ref": f"refs/heads/{self.dal}", "sha": ref["object"]["sha"]})
+        if k not in (201, 422):
+            raise RuntimeError(f"'{self.dal}' dalı açılamadı ({k} {self._mesaj(g)}) — token'a Contents: yazma izni ver")
+
+    def oku(self):
+        """Uzaktaki veriyi döndürür; dosya henüz yoksa None. Hata olursa istisna fırlatır."""
+        self.son_deneme = time.time()
+        k, g = self._istek("GET", f"/repos/{self.repo}/contents/{self.yol}?ref={self.dal}")
+        if k == 200:
+            self.sha = g["sha"]
+            ham = base64.b64decode(g.get("content") or "") if g.get("encoding") == "base64" else b""
+            if not ham:   # 1 MB üstü dosyalarda içerik ayrıca okunur
+                k2, b = self._istek("GET", f"/repos/{self.repo}/git/blobs/{self.sha}")
+                if k2 != 200:
+                    raise RuntimeError(f"Kayıt okunamadı ({k2})")
+                ham = base64.b64decode(b["content"])
+            self.hazir, self.hata = True, None
+            return json.loads(ham.decode("utf-8"))
+        if k == 404:
+            self._dal_hazirla()
+            self.sha, self.hazir, self.hata = None, True, None
+            return None
+        raise RuntimeError(f"GitHub okuma hatası ({k} {self._mesaj(g)})")
+
+    def yaz(self, veri: dict) -> bool:
+        if not self.hazir:
+            return False
+        ham = json.dumps(veri, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        govde = {"message": f"Bot verisi · {dt.datetime.now(TZ):%d.%m %H:%M}", "branch": self.dal,
+                 "content": base64.b64encode(ham).decode()}
+        k = None
+        for _ in range(2):
+            if self.sha:
+                govde["sha"] = self.sha
+            else:
+                govde.pop("sha", None)
+            k, g = self._istek("PUT", f"/repos/{self.repo}/contents/{self.yol}", govde)
+            if k in (200, 201):
+                self.sha, self.son, self.hata = g["content"]["sha"], time.time(), None
+                return True
+            if k in (409, 422):    # sha eskimiş: güncelini alıp bir kez daha dene
+                k2, g2 = self._istek("GET", f"/repos/{self.repo}/contents/{self.yol}?ref={self.dal}")
+                self.sha = g2["sha"] if k2 == 200 else None
+                continue
+            self.hata = f"GitHub kayıt hatası ({k} {self._mesaj(g)})"
+            return False
+        self.hata = f"GitHub kayıt hatası ({k})"
+        return False
+
+
+def depo_kur() -> GitDepo | None:
+    """Streamlit 'Secrets' içinde GITHUB_TOKEN ve GITHUB_REPO varsa kalıcı kaydı açar."""
+    try:
+        tok, repo = st.secrets.get("GITHUB_TOKEN"), st.secrets.get("GITHUB_REPO")
+        dal = st.secrets.get("GITHUB_DAL", "bot-veri")
+    except Exception:  # noqa: BLE001  (secrets hiç tanımlı değil)
+        return None
+    if not tok or not repo:
+        return None
+    repo = str(repo).strip().replace("https://github.com/", "").replace(".git", "").strip("/")
+    return GitDepo(str(tok).strip(), repo, str(dal).strip() or "bot-veri")
+
+
 class CanliBot:
-    def __init__(self):
+    def __init__(self, depo: GitDepo | None = None):
         self.kilit = threading.RLock()
+        self.depo = depo
+        self._push_log, self._push_egri = -1, -1
         self.d = self._yukle()
 
     # --- kayıt ---
@@ -1887,20 +2026,56 @@ class CanliBot:
         return dict(surum=1, ayar=ayar, aktif=True, baslangic=t, nakit=float(ayar["butce"]), poz=[], islem=[],
                     egri=[[t, float(ayar["butce"])]], gunler={}, gorulen=[], log=[], xu0=None, son_tik=None)
 
+    @staticmethod
+    def _gecerli(d) -> bool:
+        return isinstance(d, dict) and d.get("surum") == 1
+
+    def _duzelt(self, d: dict) -> dict:
+        d["ayar"] = {**BOT_VARSAYILAN, **d.get("ayar", {})}
+        return d
+
     def _yukle(self) -> dict:
+        yerel = None
         try:
             with open(BOT_DOSYA, encoding="utf-8") as f:
-                d = json.load(f)
-            if d.get("surum") == 1:
-                d["ayar"] = {**BOT_VARSAYILAN, **d.get("ayar", {})}
-                return d
+                yerel = json.load(f)
         except Exception:  # noqa: BLE001
             pass
+        yerel = self._duzelt(yerel) if self._gecerli(yerel) else None
+        if self.depo:
+            try:
+                uzak = self.depo.oku()
+                if self._gecerli(uzak):
+                    return self._sec(self._duzelt(uzak), yerel)
+                if yerel:                        # uzakta henüz kayıt yok: mevcut geçmişi GitHub'a taşı
+                    self._push_log = -2
+                    return yerel
+            except Exception as e:  # noqa: BLE001
+                self.depo.hata = str(e)
+        if yerel:
+            return yerel
         d = self._yeni(dict(BOT_VARSAYILAN))
         d["log"].append([int(time.time()), "bilgi", f"Bot {sayi(d['ayar']['butce'], 0)} TL sanal bütçeyle hazır", None])
         return d
 
-    def _kaydet(self):
+    @staticmethod
+    def _sec(uzak: dict, yerel: dict | None) -> dict:
+        """Aynı botun devamı olan ve daha yeni olan kaydı seçer."""
+        if (yerel and yerel.get("baslangic") == uzak.get("baslangic")
+                and (yerel.get("egri") or [[0]])[-1][0] > (uzak.get("egri") or [[0]])[-1][0]):
+            return yerel
+        return uzak
+
+    def _kucult(self, d: dict) -> dict:
+        """GitHub'a giden kaydı makul boyutta tutar."""
+        if len(d["islem"]) > 1000:
+            d["islem"] = d["islem"][-1000:]
+        if len(d["egri"]) > 3000:
+            d["egri"] = d["egri"][:1] + d["egri"][1::2]
+        d["log"] = d["log"][-150:]
+        return d
+
+    def _yerel_yaz(self):
         try:
             gecici = BOT_DOSYA + ".tmp"
             with open(gecici, "w", encoding="utf-8") as f:
@@ -1908,6 +2083,34 @@ class CanliBot:
             os.replace(gecici, BOT_DOSYA)
         except Exception:  # noqa: BLE001
             pass
+
+    def _kaydet(self, zorla: bool = False):
+        self._yerel_yaz()
+        if not self.depo:
+            return
+        if not self.depo.hazir:
+            if time.time() - self.depo.son_deneme < 120:
+                return
+            try:                                  # açılışta GitHub'a ulaşılamadıysa tekrar dene
+                uzak = self.depo.oku()
+                if self._gecerli(uzak):
+                    self.d = self._sec(self._duzelt(uzak), self.d)
+                    if self.d is not uzak:
+                        zorla = True
+                    else:
+                        self._yerel_yaz()
+                else:
+                    zorla = True
+            except Exception as e:  # noqa: BLE001
+                self.depo.hata = str(e)
+                return
+        log_n, eg_n = len(self.d["log"]), (self.d["egri"][-1][0] if self.d["egri"] else 0)
+        yeni_olay = log_n != self._push_log or (self.d["log"] and self.d["log"][-1][0] > (self.depo.son or 0))
+        sure_doldu = eg_n != self._push_egri and time.time() - (self.depo.son or 0) > 600
+        if zorla or yeni_olay or sure_doldu or self._push_log == -2:
+            self._kucult(self.d)
+            if self.depo.yaz(self.d):
+                self._push_log, self._push_egri = len(self.d["log"]), eg_n
 
     def _log(self, tip: str, metin: str, s: str | None = None):
         self.d["log"].append([int(time.time()), tip, metin, s])
@@ -2139,7 +2342,7 @@ class CanliBot:
                     if k == "hepsi" or p["id"] == q.get("id"):
                         self._sat(p, p["kalan"], p["fiyat"], t, "Elle kapatıldı")
                 mesaj = "Pozisyon kapatıldı" if k == "kapat" else "Tüm pozisyonlar kapatıldı"
-            self._kaydet()
+            self._kaydet(zorla=True)
             return mesaj
 
     # --- istatistik ve site verisi ---
@@ -2219,7 +2422,10 @@ class CanliBot:
                         poz=poz, islem=islem, egri=egri, gunler=gunler[-30:],
                         log=[[saat(x[0]), x[1], x[2], x[3]] for x in reversed(d["log"][-80:])],
                         st=self._istatistik(), bugun=dict(islem=bugun.get("al", 0)),
-                        son_tik=saat(d["son_tik"]) if d.get("son_tik") else None)
+                        son_tik=saat(d["son_tik"]) if d.get("son_tik") else None,
+                        kayit=(dict(tip="github", hazir=self.depo.hazir, hata=self.depo.hata, repo=self.depo.repo, dal=self.depo.dal,
+                                    son=saat(int(self.depo.son)) if self.depo.son else None)
+                               if self.depo else dict(tip="yerel")))
 
 
 # ---------- Arka plan servisi: sürekli tarar, botu çalıştırır, site açılınca hazır sonuç verir ----------
@@ -2236,7 +2442,7 @@ class Servis:
         self.derin_sin = {m: {} for m in MODLAR}
         self.karne = {m: [] for m in MODLAR}
         self.bot = {m: dict(n=0) for m in MODLAR}
-        self.canli = CanliBot()
+        self.canli = CanliBot(depo_kur())
         threading.Thread(target=self._dongu, daemon=True).start()
 
     def sayfa(self, mesaj: str | None = None) -> str:
@@ -2356,8 +2562,8 @@ class Servis:
 
 
 @st.cache_resource
-def servis_al_v2(surum: str = "bot-1") -> Servis:
-    # Ad ve sürüm değişince Streamlit eski (önceki app.py'den kalan) servisi kullanmaz
+def servis_al_v3(surum: str = "kalici-1") -> Servis:
+    # Ad ve sürüm değişince Streamlit önceki app.py'den kalan eski servisi kullanmaz
     return Servis()
 
 
@@ -2397,10 +2603,10 @@ iframe {height:100dvh !important; display:block; border:0}
 div[data-testid="stVerticalBlock"] {gap:0 !important}
 </style>""", unsafe_allow_html=True)
 
-servis = servis_al_v2()
-if not hasattr(servis, "canli"):   # önbellekte eski sürüm kalmışsa temizle ve yeniden kur
+servis = servis_al_v3()
+if not hasattr(servis, "canli") or not hasattr(servis.canli, "depo"):   # önbellekte eski sürüm kalmışsa yeniden kur
     st.cache_resource.clear()
-    servis = servis_al_v2()
+    servis = servis_al_v3()
 
 mesaj = None
 try:
