@@ -9,6 +9,7 @@ Yatırım tavsiyesi değildir.
 """
 
 import datetime as dt
+import html
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -160,56 +161,193 @@ def analiz_et(hisse: str, ham: pd.DataFrame) -> dict:
                 sinyal=son_sinyal, guncel=df.index[-1])
 
 
+# ---------- Görünüm ----------
+RENK = dict(zemin="#0b0f14", kart="#121821", cizgi="#1f2a37", yazi="#e6edf3",
+            soluk="#8b98a5", yesil="#22c55e", kirmizi="#ef4444", vurgu="#f5a524")
+
+STIL = f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');
+html, body, [class*="css"], .stApp {{ font-family: 'IBM Plex Sans', sans-serif; }}
+.stApp {{ background: {RENK['zemin']}; color: {RENK['yazi']}; }}
+#MainMenu, footer, header[data-testid="stHeader"] {{ visibility: hidden; height: 0; }}
+.block-container {{ padding: 1rem 0.9rem 3rem; max-width: 900px; }}
+.mono {{ font-family: 'JetBrains Mono', monospace; }}
+
+.ust {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:.4rem; }}
+.logo {{ font-weight:700; font-size:1.35rem; letter-spacing:-.02em; }}
+.logo span {{ color:{RENK['vurgu']}; }}
+.seans {{ font-size:.75rem; padding:.25rem .6rem; border-radius:999px; border:1px solid {RENK['cizgi']}; }}
+.seans.acik {{ color:{RENK['yesil']}; border-color:{RENK['yesil']}55; }}
+.seans.kapali {{ color:{RENK['soluk']}; }}
+.altbilgi {{ color:{RENK['soluk']}; font-size:.72rem; margin-bottom:1rem; }}
+
+.ozet {{ display:grid; grid-template-columns:repeat(3,1fr); gap:.5rem; margin-bottom:1.2rem; }}
+.ozet div {{ background:{RENK['kart']}; border:1px solid {RENK['cizgi']}; border-radius:12px; padding:.6rem .7rem; }}
+.ozet b {{ display:block; font-family:'JetBrains Mono',monospace; font-size:1.3rem; }}
+.ozet small {{ color:{RENK['soluk']}; font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; }}
+
+.baslik {{ font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; color:{RENK['soluk']};
+          margin:1.2rem 0 .5rem; font-weight:600; }}
+
+.kart {{ background:{RENK['kart']}; border:1px solid {RENK['cizgi']}; border-left:4px solid;
+        border-radius:12px; padding:.75rem .85rem; margin-bottom:.6rem; }}
+.kart.al {{ border-left-color:{RENK['yesil']}; }}
+.kart.sat {{ border-left-color:{RENK['kirmizi']}; }}
+.kart-ust {{ display:flex; align-items:center; gap:.55rem; }}
+.rozet {{ font-weight:700; font-size:.75rem; padding:.15rem .5rem; border-radius:6px; color:#0b0f14; }}
+.rozet.al {{ background:{RENK['yesil']}; }}
+.rozet.sat {{ background:{RENK['kirmizi']}; }}
+.kod {{ font-weight:700; font-size:1.05rem; }}
+.fiyat {{ margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:1.05rem; }}
+.sebep {{ color:{RENK['yazi']}; font-size:.85rem; margin:.35rem 0 .5rem; }}
+.cipler {{ display:flex; flex-wrap:wrap; gap:.35rem; }}
+.cipler span {{ font-size:.72rem; color:{RENK['soluk']}; background:{RENK['zemin']};
+               border:1px solid {RENK['cizgi']}; border-radius:6px; padding:.15rem .45rem; }}
+.cipler .stop {{ color:{RENK['kirmizi']}; }}
+.cipler .hedef {{ color:{RENK['yesil']}; }}
+.bos {{ background:{RENK['kart']}; border:1px dashed {RENK['cizgi']}; border-radius:12px;
+       padding:.9rem; color:{RENK['soluk']}; font-size:.85rem; text-align:center; }}
+
+.liste {{ background:{RENK['kart']}; border:1px solid {RENK['cizgi']}; border-radius:12px; overflow:hidden; }}
+.satir {{ display:grid; grid-template-columns:1.1fr 1fr .8fr 1.1fr; align-items:center;
+         padding:.55rem .8rem; border-bottom:1px solid {RENK['cizgi']}; font-size:.85rem; }}
+.satir:last-child {{ border-bottom:none; }}
+.satir.bas {{ color:{RENK['soluk']}; font-size:.68rem; text-transform:uppercase; letter-spacing:.05em; }}
+.satir .sag {{ text-align:right; font-family:'JetBrains Mono',monospace; }}
+.arti {{ color:{RENK['yesil']}; }} .eksi {{ color:{RENK['kirmizi']}; }}
+.hap {{ justify-self:end; font-size:.68rem; padding:.12rem .45rem; border-radius:999px;
+       border:1px solid {RENK['cizgi']}; color:{RENK['soluk']}; white-space:nowrap; }}
+.hap.al {{ color:{RENK['yesil']}; border-color:{RENK['yesil']}66; }}
+.hap.sat {{ color:{RENK['kirmizi']}; border-color:{RENK['kirmizi']}66; }}
+.hap.yakin {{ color:{RENK['vurgu']}; border-color:{RENK['vurgu']}66; }}
+
+.bilgi {{ display:grid; grid-template-columns:repeat(4,1fr); gap:.4rem; margin-top:.3rem; }}
+.bilgi div {{ background:{RENK['kart']}; border:1px solid {RENK['cizgi']}; border-radius:10px;
+             padding:.45rem .55rem; font-size:.7rem; color:{RENK['soluk']}; }}
+.bilgi b {{ display:block; color:{RENK['yazi']}; font-family:'JetBrains Mono',monospace; font-size:.9rem; }}
+
+.uyari {{ color:{RENK['soluk']}; font-size:.7rem; text-align:center; margin-top:1.5rem; }}
+div[data-testid="stProgress"] > div > div > div {{ background:{RENK['vurgu']}; }}
+</style>
+"""
+
+
+def seans_acik_mi() -> bool:
+    simdi = dt.datetime.now(TZ)
+    return simdi.weekday() < 5 and dt.time(10, 0) <= simdi.time() <= dt.time(18, 10)
+
+
+def sayi(x, ondalik=2):
+    return "—" if x is None else f"{x:,.{ondalik}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def sinyal_karti(a: dict) -> str:
+    s = a["sinyal"]
+    tur = s["tur"].lower()
+    ne_zaman = "son mumda" if s["kac_mum_once"] == 0 else f"{s['kac_mum_once']} mum önce"
+    if s["tur"] == "AL":
+        risk, kazanc = s["fiyat"] - s["stop"], s["hedef"] - s["fiyat"]
+    else:
+        risk, kazanc = s["stop"] - s["fiyat"], s["fiyat"] - s["hedef"]
+    rk = f"R/K {kazanc / risk:.1f}" if risk > 0 and kazanc > 0 else ""
+    return f"""
+<div class="kart {tur}">
+  <div class="kart-ust"><span class="rozet {tur}">{s['tur']}</span>
+    <span class="kod">{html.escape(a['hisse'])}</span>
+    <span class="fiyat">{sayi(a['fiyat'])}</span></div>
+  <div class="sebep">{s['sebep']} · seviye {sayi(s['seviye'])}</div>
+  <div class="cipler">
+    <span>⏱ {s['zaman']:%H:%M} · {ne_zaman}</span>
+    <span>Sinyal {sayi(s['fiyat'])}</span>
+    <span>Hacim {s['hacim_oran']:.1f}x</span>
+    <span class="stop">Stop {sayi(s['stop'])}</span>
+    <span class="hedef">Hedef {sayi(s['hedef'])}</span>
+    {f'<span>{rk}</span>' if rk else ''}
+  </div>
+</div>"""
+
+
+def hisse_listesi(sonuclar: list[dict]) -> str:
+    satirlar = ['<div class="satir bas"><span>Hisse</span><span class="sag">Fiyat</span>'
+                '<span class="sag">Gün</span><span class="sag">Durum</span></div>']
+    for a in sonuclar:
+        if a["sinyal"]:
+            hap = f'<span class="hap {a["sinyal"]["tur"].lower()}">{a["sinyal"]["tur"]} sinyali</span>'
+        elif a["durum"] != "Arada":
+            hap = f'<span class="hap yakin">{a["durum"]}</span>'
+        else:
+            hap = f'<span class="hap">RSI {a["rsi"]:.0f}</span>'
+        yon = "arti" if a["degisim"] >= 0 else "eksi"
+        satirlar.append(
+            f'<div class="satir"><b>{html.escape(a["hisse"])}</b>'
+            f'<span class="sag">{sayi(a["fiyat"])}</span>'
+            f'<span class="sag {yon}">{a["degisim"]:+.2f}%</span>{hap}</div>')
+    return '<div class="liste">' + "".join(satirlar) + "</div>"
+
+
 # ---------- Grafik ----------
 def grafik(a: dict, mum_sayisi: int = 120) -> go.Figure:
     df = a["df"].iloc[-mum_sayisi:]
     x = df.index.strftime("%d.%m %H:%M")
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.03)
-    fig.add_trace(go.Candlestick(x=x, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-                                 increasing_line_color="#16a34a", decreasing_line_color="#dc2626",
-                                 name="Fiyat"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x, y=df["EMA50"], line=dict(color="#f59e0b", width=1.2), name="EMA50"),
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.76, 0.24], vertical_spacing=0.02)
+    fig.add_trace(go.Candlestick(
+        x=x, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+        increasing=dict(line=dict(color=RENK["yesil"]), fillcolor=RENK["yesil"]),
+        decreasing=dict(line=dict(color=RENK["kirmizi"]), fillcolor=RENK["kirmizi"]),
+        name="Fiyat"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=df["EMA50"], line=dict(color=RENK["vurgu"], width=1.3), name="EMA50"),
                   row=1, col=1)
-    renk = np.where(df["Close"] >= df["Open"], "#16a34a", "#dc2626")
-    fig.add_trace(go.Bar(x=x, y=df["Volume"], marker_color=renk, opacity=0.6, name="Hacim"), row=2, col=1)
+    renk = np.where(df["Close"] >= df["Open"], RENK["yesil"], RENK["kirmizi"])
+    fig.add_trace(go.Bar(x=x, y=df["Volume"], marker_color=renk, opacity=0.45, name="Hacim"), row=2, col=1)
 
     alt, ust = df["Low"].min() * 0.99, df["High"].max() * 1.01
     for s in a["seviyeler"]:
         if alt <= s <= ust:
-            fig.add_hline(y=s, line_dash="dash", line_width=1,
-                          line_color="#16a34a" if s < a["fiyat"] else "#dc2626",
-                          annotation_text=f"{s:.2f}", annotation_position="right", row=1, col=1)
+            c = RENK["yesil"] if s < a["fiyat"] else RENK["kirmizi"]
+            fig.add_hline(y=s, line_dash="dot", line_width=1, line_color=c, opacity=0.8,
+                          annotation_text=sayi(s), annotation_position="top left",
+                          annotation_font=dict(color=c, size=10), row=1, col=1)
 
     s = a["sinyal"]
     if s and s["zaman"] in df.index:
         satir = df.loc[s["zaman"]]
         al = s["tur"] == "AL"
+        c = RENK["yesil"] if al else RENK["kirmizi"]
         fig.add_trace(go.Scatter(
             x=[s["zaman"].strftime("%d.%m %H:%M")],
-            y=[satir["Low"] * 0.995 if al else satir["High"] * 1.005],
-            mode="markers+text", text=[s["tur"]],
+            y=[satir["Low"] * 0.994 if al else satir["High"] * 1.006],
+            mode="markers+text", text=[s["tur"]], textfont=dict(color=c, size=11),
             textposition="bottom center" if al else "top center",
-            marker=dict(symbol="triangle-up" if al else "triangle-down", size=14,
-                        color="#16a34a" if al else "#dc2626"),
+            marker=dict(symbol="triangle-up" if al else "triangle-down", size=13, color=c),
             name="Sinyal"), row=1, col=1)
 
-    fig.update_layout(height=520, margin=dict(l=8, r=8, t=8, b=8), showlegend=False,
-                      xaxis_rangeslider_visible=False, dragmode="pan")
-    fig.update_xaxes(type="category", nticks=6)
+    fig.update_layout(
+        height=480, margin=dict(l=4, r=4, t=6, b=4), showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=RENK["zemin"],
+        font=dict(family="IBM Plex Sans, sans-serif", color=RENK["soluk"], size=10),
+        xaxis_rangeslider_visible=False, dragmode="pan", hovermode="x unified")
+    fig.update_xaxes(type="category", nticks=5, gridcolor=RENK["cizgi"], showline=False)
+    fig.update_yaxes(gridcolor=RENK["cizgi"], side="right", zeroline=False)
     return fig
 
 
 # ---------- Sayfa ----------
-st.title("📈 BIST Sinyal Paneli")
+st.markdown(STIL, unsafe_allow_html=True)
+
+acik = seans_acik_mi()
+st.markdown(
+    f'<div class="ust"><div class="logo">BIST<span>·</span>Sinyal</div>'
+    f'<div class="seans {"acik" if acik else "kapali"}">{"● Seans açık" if acik else "○ Seans kapalı"}</div></div>',
+    unsafe_allow_html=True)
 
 with st.expander("⚙️ Ayarlar"):
     hisse_metni = st.text_input("Hisseler (virgülle ayır)", VARSAYILAN_HISSELER)
     periyot_adi = st.selectbox("Mum periyodu", list(PERIYOTLAR))
+    if st.button("🔄 Verileri şimdi yenile", use_container_width=True):
+        st.cache_data.clear()
 hisseler = [h.strip().upper() for h in hisse_metni.split(",") if h.strip()]
 periyot, gecmis = PERIYOTLAR[periyot_adi]
-
-if st.button("🔄 Şimdi yenile", use_container_width=True):
-    st.cache_data.clear()
 
 
 @st.fragment(run_every=YENILEME)
@@ -225,59 +363,54 @@ def panel():
                 sonuclar.append(analiz_et(h, ham))
         except Exception:
             hatalar.append(h)
-        ilerleme.progress(n / len(hisseler), text=f"{h} inceleniyor...")
+        ilerleme.progress(n / max(len(hisseler), 1), text=f"{h} inceleniyor...")
     ilerleme.empty()
 
-    st.caption(f"Son güncelleme: {dt.datetime.now(TZ):%H:%M} · Veri yaklaşık 15 dk gecikmeli · "
-               f"{YENILEME.seconds // 60} dk'da bir yenilenir · Yatırım tavsiyesi değildir")
+    st.markdown(f'<div class="altbilgi">Güncellendi {dt.datetime.now(TZ):%H:%M} · '
+                f'{periyot_adi} mumlar · {YENILEME.seconds // 60} dk\'da bir yenilenir</div>',
+                unsafe_allow_html=True)
     if hatalar:
         st.warning("Veri alınamadı: " + ", ".join(hatalar))
 
-    # --- Sinyaller ---
-    st.subheader("🔔 Sinyaller")
     sinyalliler = sorted([a for a in sonuclar if a["sinyal"]], key=lambda a: a["sinyal"]["zaman"], reverse=True)
-    if not sinyalliler:
-        st.info(f"Son {GERIYE_BAK_MUM} mumda sinyal yok.")
-    for a in sinyalliler:
-        s = a["sinyal"]
-        ne_zaman = "son mumda" if s["kac_mum_once"] == 0 else f"{s['kac_mum_once']} mum önce"
-        metin = (f"**{'🟢 AL' if s['tur'] == 'AL' else '🔴 SAT'} · {a['hisse']}** — {s['sebep']} "
-                 f"({s['seviye']:.2f})  \n"
-                 f"Sinyal fiyatı {s['fiyat']:.2f} · şimdi {a['fiyat']:.2f} · "
-                 f"{s['zaman']:%H:%M} ({ne_zaman}) · hacim {s['hacim_oran']:.1f}x  \n"
-                 f"Stop {s['stop']:.2f} · Hedef {s['hedef']:.2f}")
-        (st.success if s["tur"] == "AL" else st.error)(metin)
+    al_say = sum(a["sinyal"]["tur"] == "AL" for a in sinyalliler)
+    sat_say = len(sinyalliler) - al_say
+    st.markdown(
+        f'<div class="ozet"><div><small>AL</small><b class="arti">{al_say}</b></div>'
+        f'<div><small>SAT</small><b class="eksi">{sat_say}</b></div>'
+        f'<div><small>Takip</small><b>{len(sonuclar)}</b></div></div>',
+        unsafe_allow_html=True)
 
-    # --- Tablo ---
-    st.subheader("📋 Tüm hisseler")
-    if sonuclar:
-        tablo = pd.DataFrame([{
-            "Hisse": a["hisse"],
-            "Fiyat": round(a["fiyat"], 2),
-            "Gün %": round(a["degisim"], 2),
-            "Sinyal": a["sinyal"]["tur"] if a["sinyal"] else "—",
-            "Durum": a["durum"],
-            "RSI": round(a["rsi"]),
-            "Trend": a["trend"],
-            "Destek": round(a["destek"], 2) if a["destek"] else None,
-            "Direnç": round(a["direnc"], 2) if a["direnc"] else None,
-        } for a in sonuclar])
-        st.dataframe(tablo, hide_index=True, use_container_width=True)
+    st.markdown('<div class="baslik">Sinyaller</div>', unsafe_allow_html=True)
+    if sinyalliler:
+        st.markdown("".join(sinyal_karti(a) for a in sinyalliler), unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="bos">Son {GERIYE_BAK_MUM} mumda sinyal yok</div>', unsafe_allow_html=True)
 
-    # --- Grafik ---
-    st.subheader("📊 Grafik")
-    if sonuclar:
-        isimler = [a["hisse"] for a in sonuclar]
-        varsayilan = isimler.index(sinyalliler[0]["hisse"]) if sinyalliler else 0
-        secim = st.selectbox("Hisse seç", isimler, index=varsayilan)
-        a = next(x for x in sonuclar if x["hisse"] == secim)
-        st.plotly_chart(grafik(a), use_container_width=True, config={"displayModeBar": False})
-        bilgi = [f"Fiyat **{a['fiyat']:.2f}**", f"RSI **{a['rsi']:.0f}**", f"Trend **{a['trend']}**"]
-        if a["destek"]:
-            bilgi.append(f"Destek **{a['destek']:.2f}**")
-        if a["direnc"]:
-            bilgi.append(f"Direnç **{a['direnc']:.2f}**")
-        st.markdown(" · ".join(bilgi))
+    if not sonuclar:
+        return
+
+    st.markdown('<div class="baslik">Grafik</div>', unsafe_allow_html=True)
+    isimler = [a["hisse"] for a in sonuclar]
+    onceki = st.session_state.get("secili")
+    if onceki not in isimler:
+        onceki = sinyalliler[0]["hisse"] if sinyalliler else isimler[0]
+    secim = st.pills("Hisse", isimler, default=onceki, label_visibility="collapsed") or onceki
+    st.session_state["secili"] = secim
+    a = next(x for x in sonuclar if x["hisse"] == secim)
+    st.plotly_chart(grafik(a), use_container_width=True, config={"displayModeBar": False})
+    st.markdown(
+        f'<div class="bilgi"><div>Fiyat<b>{sayi(a["fiyat"])}</b></div>'
+        f'<div>RSI<b>{a["rsi"]:.0f}</b></div>'
+        f'<div>Destek<b class="arti">{sayi(a["destek"])}</b></div>'
+        f'<div>Direnç<b class="eksi">{sayi(a["direnc"])}</b></div></div>',
+        unsafe_allow_html=True)
+
+    st.markdown('<div class="baslik">Tüm hisseler</div>', unsafe_allow_html=True)
+    st.markdown(hisse_listesi(sonuclar), unsafe_allow_html=True)
+
+    st.markdown('<div class="uyari">Veri yaklaşık 15 dk gecikmelidir · Yatırım tavsiyesi değildir</div>',
+                unsafe_allow_html=True)
 
 
 panel()
