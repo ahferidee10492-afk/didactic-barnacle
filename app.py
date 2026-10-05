@@ -2124,7 +2124,7 @@ function ekranBot(){const a=B.ayar,kz=B.kz||0;
    ${botDurum()}
    <div class="botalt"><div><small>Bugün</small><b>${B.bugun.islem}<span class="mu" style="font-size:12px">/${a.gunluk}</span></b><small>işlem</small></div><div><small>Açık</small><b>${B.poz.length}<span class="mu" style="font-size:12px">/${a.acik}</span></b><small>pozisyon</small></div><div><small>Nakit</small><b>${tl(B.nakit,0)}</b><small>₺</small></div></div>
    <div class="dugmeler"><button class="btn" data-bot="${B.aktif?'durdur':'baslat'}">${B.aktif?IK.dur+' Duraklat':IK.bas+' Başlat'}</button><button class="btn ana" data-botayar="1">${IK.ayar} Bot ayarları</button></div></div>`;
-  x+=kayitSerit();
+  x+=taniKart()+kayitSerit();
   const b=(k,t)=>`<button data-bt="${k}" class="${bt===k?'on':''}">${t}</button>`;
   x+=`<div class="seg" style="margin-top:16px">${b('ozet','Özet')}${b('poz','Pozisyon'+(B.poz.length?' · '+B.poz.length:''))}${b('islem','İşlemler')}${b('gun','Günlük')}${b('log','Kayıt')}</div><div>${({ozet:botOzet,poz:botPoz,islem:botIslem,gun:botGun,log:botLog}[bt]||botOzet)()}</div>`;
   return x}
@@ -2145,6 +2145,18 @@ GITHUB_REPO = "kullanici-adin/didactic-barnacle"</span></li>
    <p class="not">Token sadece bu depoya ve sadece dosya yazma iznine sahip olur. Bot verisi her işlemde ve seans boyunca 10 dakikada bir kaydedilir. Şu anki geçmiş, kurulumdan sonra ilk kayıtta GitHub'a taşınır (uygulama araya yeniden başlamazsa).</p>
    <div class="dugmeler" style="padding:8px 0 0"><button class="btn" id="kb_kapat">Tamam</button></div>`;
   sheetAc();$('#kb_kapat').onclick=sheetKapat}
+function taniKart(){const t=B.tani;if(!t)return `<div class="kart pad" style="margin-top:12px"><b style="font:700 15px var(--disp)">Bot ne yapıyor?</b><p class="not" style="margin:6px 0 0">İlk tarama sürüyor. Tam tarama birkaç dakika alır; bot ilk taramadan sonra karar vermeye başlar.</p></div>`;
+  const ad={guven:'güven eşiğinin altında',kalite:'kalite yetersiz',haber:'olumsuz haber',gorulen:'zaten değerlendirildi',aralik:'fiyat giriş aralığı dışında',limit:'günlük işlem ya da pozisyon limiti dolu',elde:'hisse zaten elde',lot:'bütçe/lot yetmedi'};
+  const nl=Object.entries(t.neden||{}).sort((a,b)=>b[1]-a[1]);
+  let ana;if(t.mesaj)ana=t.mesaj;
+  else if(t.giris)ana=`Son taramada ${t.giris} yeni işleme girdi.`;
+  else if(!t.sinyal)ana=`${B.ayar?GOSTER[B.ayar.dilim]:''} grafikte şu an taze AL sinyali yok. Bot her ~2 dakikada bir tarıyor; bir mum kapanıp sinyal oluşunca girecek.`;
+  else ana=`${t.sinyal} taze AL sinyali bulundu ama hiçbiri şartları sağlamadı.`;
+  return `<div class="kart pad" style="margin-top:12px"><div class="sat1"><b style="font:700 15px var(--disp)">Bot ne yapıyor?</b><span class="lbl">son tarama ${B.son_tik?B.son_tik.split(' ')[1]:'—'}</span></div>
+   <p style="margin:8px 0 0;font-size:13.5px;font-weight:600;line-height:1.5">${esc(ana)}</p>
+   <div class="satir" style="margin-top:10px"><span class="rozet">${t.taranan} hisse tarandı</span><span class="rozet">${t.bugun} hissede bugünün verisi var</span>${t.son_mum?`<span class="rozet">son mum ${t.son_mum}</span>`:''}</div>
+   ${nl.length?`<div class="bilesen" style="margin-top:4px">${nl.map(([k,v])=>`<div><div class="ust3"><span class="mu">${ad[k]||k}</span><span>${v}</span></div></div>`).join('')}</div>`:''}
+   <p class="not" style="margin-top:10px">Eşikleri gevşetmek için Bot ayarlarından en düşük güveni ya da kaliteyi düşürebilirsin. Daha seyrek ama daha seçici işlem, uzun vadede daha tutarlı sonuç verir.</p></div>`}
 function botDurum(){const a=B.ayar,d=B.durum||{},c=[];
   const gd=d.gun_degisim;
   if(a.gunluk_zarar>0)c.push(d.zarar_kilit?`<span class="rozet dn">Zarar limiti doldu, bugün yeni işlem yok</span>`:`<span class="rozet ${gd!=null&&gd<0?'wa':''}">Bugün ${gd==null?'—':yz(gd,1)} · limit −%${tl(a.gunluk_zarar,1)}</span>`);
@@ -3052,6 +3064,19 @@ class CanliBot:
                 self._log("bilgi", "Piyasa toparlandı, piyasa filtresi kalktı")
             d["durum"] = dict(gun_degisim=round(gun_degisim, 2), zarar_kilit=bool(zarar_kilit), piyasa_kilit=bool(piyasa_kilit),
                               bist_d=bist_d)
+            tani = dict(t=t, taranan=len(analiz.get(mod, {})), bugun=0, son_mum=None, sinyal=0, giris=0, neden={}, mesaj=None)
+            neden = tani["neden"]
+            ekle = lambda k: neden.__setitem__(k, neden.get(k, 0) + 1)  # noqa: E731
+            if not acik:
+                tani["mesaj"] = "Seans kapalı; bot 10:00'da açılışla birlikte sinyal aramaya başlar."
+            elif not d["aktif"]:
+                tani["mesaj"] = "Bot duraklatılmış; yeni işleme girmiyor."
+            elif gec:
+                tani["mesaj"] = "1 ve 5 dk işlemleri için gün sonu yaklaştı (17:40 sonrası yeni işlem yok)."
+            elif zarar_kilit:
+                tani["mesaj"] = "Günlük zarar limiti doldu; bugün yeni işlem yok."
+            elif piyasa_kilit:
+                tani["mesaj"] = f"Piyasa filtresi devrede (BIST100 {sayi(bist_d, 1)}%); AL sinyallerine girilmiyor."
             if d["aktif"] and acik and not gec and not zarar_kilit and not piyasa_kilit:
                 liste = analiz.get(mod, {})
                 gorulen = set(d["gorulen"])
@@ -3060,32 +3085,51 @@ class CanliBot:
                 for h, an in liste.items():
                     ctx = an["ctx"]
                     df, n = ctx["df"], ctx["n"]
-                    if pd.Timestamp(df.index[-1]).date() != simdi.date():
+                    son_t = pd.Timestamp(df.index[-1])
+                    if tani["son_mum"] is None or son_t > tani["son_mum"]:
+                        tani["son_mum"] = son_t
+                    if son_t.date() != simdi.date():
                         continue                                  # bugünün verisi yoksa işlem yok
+                    tani["bugun"] += 1
                     for s in filtrele(an["sinyaller"], ESIK)[-2:]:
-                        if s["yon"] <= 0 or n - 1 - s["i"] > 1 or s["sonuc"] != "açık" or s["guven"] < a["guven"]:
+                        if s["yon"] <= 0 or s["sonuc"] != "açık":
                             continue
+                        if n - 1 - s["i"] > 1:
+                            continue                              # eski sinyal (sadece son 2 mum)
+                        tani["sinyal"] += 1
+                        if s["guven"] < a["guven"]:
+                            ekle("guven"); continue
                         j = sinyal_json(s, df, n, an["fiyat"], mod)
                         if KALITE_SIRA[j["kalite"]] > KALITE_SIRA[a["kalite"]]:
-                            continue
+                            ekle("kalite"); continue
                         if s.get("haber_skor", 0) <= -2:
-                            continue                              # olumsuz haber akışı olan hisseye girilmez
+                            ekle("haber"); continue               # olumsuz haber akışı olan hisseye girilmez
                         anahtar = f"{h}-{mod}-{j['t']}"
                         f = float(an["fiyat"])
-                        if anahtar in gorulen or f <= s["stop"] or not (s["giris_alt"] * 0.998 <= f <= s["giris_ust"] * 1.003):
-                            continue
+                        if anahtar in gorulen:
+                            ekle("gorulen"); continue
+                        if f <= s["stop"] or not (s["giris_alt"] * 0.998 <= f <= s["giris_ust"] * 1.003):
+                            ekle("aralik"); continue
                         adaylar.append((KALITE_SIRA[j["kalite"]], -s["guven"], h, s, j, anahtar, an))
                 adaylar.sort(key=lambda x: (x[0], x[1]))
                 for _, _, h, s, j, anahtar, an in adaylar:
                     if gun["al"] >= a["gunluk"] or len(d["poz"]) >= a["acik"]:
-                        break
+                        ekle("limit"); continue
                     if h in eldeki:
-                        continue
+                        ekle("elde"); continue
                     if self._al(h, mod, s, j, an, t):
                         gun["al"] += 1
+                        tani["giris"] += 1
                         eldeki.add(h)
                         d["gorulen"].append(anahtar)
+                    else:
+                        ekle("lot")
                 d["gorulen"] = d["gorulen"][-600:]
+                if tani["bugun"] == 0:
+                    tani["mesaj"] = "Yahoo'dan henüz bugüne ait veri gelmedi (veri ~15 dk gecikmeli; ilk mumlar 10:15–10:30 arası düşer)."
+            if tani["son_mum"] is not None:
+                tani["son_mum"] = f"{tani['son_mum']:%H:%M}" if mod != "w" else f"{tani['son_mum']:%d.%m}"
+            d["tani"] = tani
 
             oz = self._ozkaynak()
             gun["oz"] = round(oz, 2)
@@ -3231,7 +3275,7 @@ class CanliBot:
                         bist=_r((bist_p / d["xu0"] - 1) * 100, 2) if bist_p and d.get("xu0") else None,
                         poz=poz, islem=islem, egri=egri, gunler=gunler[-30:],
                         log=[[saat(x[0]), x[1], x[2], x[3]] for x in reversed(d["log"][-80:])],
-                        st=self._istatistik(), bugun=dict(islem=bugun.get("al", 0)), durum=d.get("durum") or {},
+                        st=self._istatistik(), bugun=dict(islem=bugun.get("al", 0)), durum=d.get("durum") or {}, tani=d.get("tani"),
                         son_tik=saat(d["son_tik"]) if d.get("son_tik") else None,
                         kayit=(dict(tip="github", hazir=self.depo.hazir, hata=self.depo.hata, repo=self.depo.repo, dal=self.depo.dal,
                                     son=saat(int(self.depo.son)) if self.depo.son else None)
