@@ -23,7 +23,10 @@ import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import email.utils
+import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -296,41 +299,96 @@ def seviyeler_bul(pv: list[tuple], tol: float = SEVIYE_TOLERANS) -> list[float]:
     return [d["p"] for d in seviye_kumeleri(pv, son_j, tol) if d["temas"] >= 2 or d["guc"] >= 0.5]
 
 
+def _olay_say(idx: np.ndarray, ara: int = 3) -> list[int]:
+    """Art arda gelen mumları tek tepki say (aynı test birden çok mum sürebilir)."""
+    out, son = [], -99
+    for j in idx:
+        if j - son > ara:
+            out.append(int(j))
+        son = j
+    return out
+
+
+def bolgeler(A: dict, pv: list[tuple], i: int, pencere: int, ek: list[dict] | None = None) -> list[dict]:
+    """Destek/direnç BÖLGELERİ. Tepe-dip kümelerinden aday bölge çıkarılır, sonra pencere içindeki her mumda
+    fiyatın o bölgeye fitille girip geri döndüğü (reddedildiği) anlar sayılır. Gerçek tepki görmeyen bölge elenir."""
+    atr = nanv(A["ATR"][i], A["Close"][i] * 0.01)
+    bas = max(0, i - pencere)
+    H, L, C = A["High"][bas:i + 1], A["Low"][bas:i + 1], A["Close"][bas:i + 1]
+    pvw = sorted([p for p in pv if bas <= p[0] <= i], key=lambda p: p[1])
+    gruplar = []
+    for p in pvw:                                        # fiyatı birbirine 0,6 ATR'den yakın tepe-dipler aynı bölge
+        if gruplar and p[1] - np.mean([x[1] for x in gruplar[-1]]) <= 0.6 * atr:
+            gruplar[-1].append(p)
+        else:
+            gruplar.append([p])
+    adaylar = []
+    for g in gruplar:
+        fl = [x[1] for x in g]
+        lo, hi = min(fl) - 0.12 * atr, max(fl) + 0.12 * atr
+        if hi - lo > 0.9 * atr:
+            m = float(np.median(fl))
+            lo, hi = m - 0.45 * atr, m + 0.45 * atr
+        adaylar.append(dict(lo=lo, hi=hi, kaynak="tepe-dip", pv=len(g)))
+    for d in ek or []:                                   # günlük grafik seviyeleri
+        adaylar.append(dict(lo=d["p"] - 0.3 * atr, hi=d["p"] + 0.3 * atr, kaynak="günlük", pv=d.get("temas", 1), gbonus=0.12))
+    out = []
+    for z in adaylar:
+        lo, hi = z["lo"], z["hi"]
+        # Tepki = bölgeye fitille girip dışında kapanan, yerel tepe/dip olan VE sonraki 8 mumda bölgeden en az 1,5 ATR uzaklaşan mum
+        ust_aday = np.where((H >= lo) & (H <= hi + 0.3 * atr) & (C < lo))[0]
+        alt_aday = np.where((L <= hi) & (L >= lo - 0.3 * atr) & (C > hi))[0]
+        ust = [j for j in ust_aday if H[j] >= H[max(0, j - 3):j + 4].max() and L[j:j + 9].min() <= lo - 1.5 * atr]
+        alt = [j for j in alt_aday if L[j] <= L[max(0, j - 3):j + 4].min() and H[j:j + 9].max() >= hi + 1.5 * atr]
+        ue, ae = _olay_say(ust, 6), _olay_say(alt, 6)
+        test = len(ue) + len(ae)
+        if test == 0 and z["kaynak"] != "günlük":
+            continue
+        tum = sorted(ue + ae)
+        son = (tum[-1] + bas) if tum else bas
+        tazelik = max(0.0, 1 - (i - son) / pencere)
+        rol = bool(ue and ae)
+        guc = min(1.0, 0.16 * min(test, 5) + 0.2 * tazelik + (0.12 if rol else 0) + z.get("gbonus", 0))
+        dokunus = [(int(j + bas), float(H[j]) if j in set(ue) else float(L[j])) for j in tum][-8:]
+        out.append(dict(lo=float(lo), hi=float(hi), p=float((lo + hi) / 2), temas=test, ust_n=len(ue), alt_n=len(ae), guc=round(guc, 3),
+                        rol=rol, kaynak=z["kaynak"], ilk=int(tum[0] + bas) if tum else bas, son=int(son), dokunus=dokunus))
+    out.sort(key=lambda d: d["p"])
+    birlesik = []
+    for d in out:                                        # üst üste binen bölgeleri birleştir
+        if birlesik and d["lo"] <= birlesik[-1]["hi"]:
+            e = birlesik[-1]
+            ana, yan = (e, d) if e["guc"] >= d["guc"] else (d, e)
+            y = dict(ana)
+            y["lo"], y["hi"] = min(e["lo"], d["lo"]), max(e["hi"], d["hi"])
+            if y["hi"] - y["lo"] > 1.1 * atr:
+                y["lo"], y["hi"] = ana["lo"], ana["hi"]
+            y["p"] = (y["lo"] + y["hi"]) / 2
+            y["temas"] = max(e["temas"], d["temas"])
+            y["guc"] = round(min(1.0, ana["guc"] + 0.06), 3)
+            y["rol"] = e["rol"] or d["rol"]
+            y["kaynak"] = ana["kaynak"] if e["kaynak"] == d["kaynak"] else "tepe-dip + günlük"
+            y["dokunus"] = sorted(e["dokunus"] + d["dokunus"])[-8:]
+            y["ilk"], y["son"] = min(e["ilk"], d["ilk"]), max(e["son"], d["son"])
+            birlesik[-1] = y
+        else:
+            birlesik.append(d)
+    secilen = []                                         # birbirine 1 ATR'den yakın bölgelerden sadece güçlüsü kalır
+    for d in sorted(birlesik, key=lambda d: -d["guc"]):
+        if all(abs(d["p"] - e["p"]) > 1.0 * atr for e in secilen):
+            secilen.append(d)
+    return sorted(secilen, key=lambda d: d["p"])
+
+
 def seviye_listesi(ctx: dict, i: int, pv: list[tuple]) -> list[dict]:
-    """i. mumda geçerli olan tüm güçlü seviyeler: grafik tepe-dipleri + son salınım + günlük grafik + hacim profili.
-    Sadece i'ye kadar bilinen veri kullanılır."""
+    """i. mumda geçerli destek/direnç bölgeleri (sadece i'ye kadar bilinen veriyle)."""
     anahtar = (len(pv), int(ctx["gun_no"][i]))
     onb = ctx.setdefault("sev_onbellek", {})
     if anahtar in onb:
         return onb[anahtar]
-    tol = ctx["tol"]
-    sev = [d for d in seviye_kumeleri(pv, i, tol) if d["temas"] >= 2 or d["guc"] >= 0.5]
-    for tip, ad in (("H", "son tepe"), ("L", "son dip")):        # en son salınım tepesi/dibi tek temasla da önemlidir
-        son = [p for p in pv if p[2] == tip]
-        if son:
-            j, f, _ = son[-1]
-            sev.append(dict(p=f, temas=1, son=j, guc=0.45, rol=False, kaynak=ad))
-    sev += ctx["gun_sev"](i)
-    prof = ctx["prof"].get(ctx["gun_no"][i])
-    if prof:
-        sev.append(dict(p=prof["poc"], temas=0, son=i, guc=0.6, rol=False, kaynak="hacim (POC)"))
-        sev.append(dict(p=prof["vah"], temas=0, son=i, guc=0.4, rol=False, kaynak="hacim (VAH)"))
-        sev.append(dict(p=prof["val"], temas=0, son=i, guc=0.4, rol=False, kaynak="hacim (VAL)"))
-    sev.sort(key=lambda d: d["p"])
-    birlesik = []
-    for d in sev:                                                    # birbirine çok yakın seviyeler tek seviye olur
-        if birlesik and abs(d["p"] - birlesik[-1]["p"]) / birlesik[-1]["p"] <= tol:
-            e = birlesik[-1]
-            ana, yan = (e, d) if e["guc"] >= d["guc"] else (d, e)
-            yeni = dict(ana)
-            yeni["guc"] = round(min(1.0, ana["guc"] + 0.08), 3)
-            yeni["temas"] = ana["temas"] + yan["temas"]
-            yeni["kaynak"] = ana["kaynak"] if yan["kaynak"] == ana["kaynak"] else ana["kaynak"] + " + " + yan["kaynak"]
-            birlesik[-1] = yeni
-        else:
-            birlesik.append(d)
-    onb[anahtar] = birlesik
-    return birlesik
+    pencere = {"1": 300, "5": 300, "g": 360, "w": 250}.get(ctx["mod"], 300)
+    z = [d for d in bolgeler(ctx["A"], pv, i, pencere, ctx["gun_sev"](i)) if d["temas"] >= 2 or d["guc"] >= 0.5]
+    onb[anahtar] = z
+    return z
 
 
 def hacim_profili(H, L, V, bins: int = 40):
@@ -950,22 +1008,22 @@ def sinyal_bul(ctx, i):
             olaylar[anahtar] = (yon, puan, metin, seviye, hedef, stop, anahtar, guc, aciklama, kirilim)
 
     for d in sev_d:
-        L_, g = d["p"], d["guc"]
+        lo_, hi_, g = d["lo"], d["hi"], d["guc"]
         if g < 0.4:
             continue
-        ac = (f"{d['temas']} temas" if d["temas"] else "") + (", rol değişimi" if d.get("rol") else "") + f" · {d['kaynak']}"
-        ad = "Direnç" if "hacim" not in d["kaynak"] else "Hacim bölgesi"
+        ac = f"{d['temas']} test" + (", rol değişimi" if d.get("rol") else "") + (f" · {d['kaynak']}" if d["kaynak"] != "tepe-dip" else "")
+        bolge = f"{sayi(lo_)}–{sayi(hi_)}"
         k = int(round((0.6 + 0.6 * g) * 22))
-        # Kırılım: kapanış seviyenin belirgin üstünde, gövdesi dolu, hacimli
-        if cp < L_ and c > L_ * (1 + tol / 2) and c - L_ >= kmin * atr and yesil and govde_orani >= 0.45 and rv >= krv:
-            olay("dk", 1, k, f"{ad} kırıldı ({sayi(L_)})", L_, guc=g, aciklama=ac)
-        elif cp > L_ and c < L_ * (1 - tol / 2) and L_ - c >= kmin * atr and kirmizi and govde_orani >= 0.45 and rv >= krv:
-            olay("dsk", -1, k, f"{'Destek' if ad == 'Direnç' else ad} kırıldı ({sayi(L_)})", L_, guc=g, aciklama=ac)
-        # Dönüş: seviyeye değip geri dönen, üst/alt bölgesinde kapanan ve onay mumu ya da hacmi olan mum
-        elif l <= L_ * (1 + tol) and c > L_ and cp >= L_ * (1 - tol) and yesil and c >= l + 0.6 * aralik and (mum_al or rv >= 1.3):
-            olay("dd", 1, int(round((0.6 + 0.6 * g) * 18)), f"Destekten dönüş ({sayi(L_)})", L_, guc=g, aciklama=ac, kirilim=False)
-        elif h >= L_ * (1 - tol) and c < L_ and cp <= L_ * (1 + tol) and kirmizi and c <= h - 0.6 * aralik and (mum_sat or rv >= 1.3):
-            olay("rd", -1, int(round((0.6 + 0.6 * g) * 18)), f"Dirençten dönüş ({sayi(L_)})", L_, guc=g, aciklama=ac, kirilim=False)
+        # Kırılım: kapanış bölgenin belirgin dışında, gövdesi dolu, hacimli
+        if cp <= hi_ and c > hi_ and c - hi_ >= kmin * atr and yesil and govde_orani >= 0.45 and rv >= krv:
+            olay("dk", 1, k, f"Direnç bölgesi yukarı kırıldı ({bolge}, {d['temas']} test)", hi_, guc=g, aciklama=ac)
+        elif cp >= lo_ and c < lo_ and lo_ - c >= kmin * atr and kirmizi and govde_orani >= 0.45 and rv >= krv:
+            olay("dsk", -1, k, f"Destek bölgesi aşağı kırıldı ({bolge}, {d['temas']} test)", lo_, guc=g, aciklama=ac)
+        # Dönüş: bölgeye fitille girip dışında kapanan, onay mumu ya da hacmi olan mum
+        elif l <= hi_ and c > hi_ and cp >= lo_ and yesil and c >= l + 0.6 * aralik and (mum_al or rv >= 1.3):
+            olay("dd", 1, int(round((0.6 + 0.6 * g) * 18)), f"Destek bölgesinden dönüş ({bolge}, {d['temas']} test)", lo_, guc=g, aciklama=ac, kirilim=False)
+        elif h >= lo_ and c < lo_ and cp <= hi_ and kirmizi and c <= h - 0.6 * aralik and (mum_sat or rv >= 1.3):
+            olay("rd", -1, int(round((0.6 + 0.6 * g) * 18)), f"Direnç bölgesinden dönüş ({bolge}, {d['temas']} test)", hi_, guc=g, aciklama=ac, kirilim=False)
 
     # Stop avı (likidite süpürme)
     son_dipler = [p for p in pv if p[2] == "L" and p[0] >= i - 60]
@@ -1235,60 +1293,172 @@ def sinyalleri_tara(ctx, bas: int) -> list[dict]:
 
 
 # ---------- Bot yorumu ----------
-def bot_yorumu(ctx, sev, formlar) -> tuple[list[str], dict]:
-    A, n = ctx["A"], ctx["n"]
+def _sec(secenek: list[str], tohum: int) -> str:
+    return secenek[tohum % len(secenek)]
+
+
+def _zaman_yaz(df, j: int, mod: str) -> str:
+    t = df.index[j]
+    if mod == "w":
+        return f"{t:%d.%m}"
+    return f"{t:%H:%M}" if t.date() == df.index[-1].date() else f"{t:%d.%m %H:%M}"
+
+
+def bot_yorumu(ctx, sev_d, formlar, gunluk=None, sym="") -> tuple[list[str], dict]:
+    """Hissenin o anki durumunu gerçek verilerle anlatan cümleler. En dikkat çekici olgular öne alınır;
+    her hisse ve gün için farklı ifade kalıpları seçilir."""
+    A, n, df, mod = ctx["A"], ctx["n"], ctx["df"], ctx["mod"]
     i = n - 1
-    c = A["Close"][i]
-    cumle = []
-    htf = ctx["htf"][i]
-    yapi, _, _ = yapi_bul(ctx["pv"])
-    trend_metin = {1: "yukarı", -1: "aşağı", 0: "yatay/kararsız"}
-    yapi_metin = {1: "yükselen tepe-dipler (HH/HL)", -1: "alçalan tepe-dipler (LH/LL)", 0: "net yön yok"}
-    if ctx["mod"] != "w":
-        cumle.append(f"Günlük trend {trend_metin[int(htf)]}; {DILIM_ADI[ctx['mod']]} grafikte {yapi_metin[yapi]}.")
+    c, o = float(df["Close"].iloc[-1]), float(A["Open"][i])     # anlatımda ekrandaki son fiyat kullanılır
+    atr = nanv(A["ATR"][i], c * 0.01)
+    tohum = sum(ord(x) for x in sym) + int(df.index[-1].day)
+    dil = DILIM_ADI[mod]
+    olg = []                                             # (önem, cümle)
+
+    # Günün hareketi ve fiyatın gün içi konumu
+    if mod != "w":
+        dfi = df
+        gun_ = dfi.index[-1].date()
+        bugun = dfi[dfi.index.date == gun_]
+        onceki = dfi[dfi.index.date < gun_]["Close"]
+        if len(bugun) and len(onceki):
+            dk, gy, gd, ac = float(onceki.iloc[-1]), float(bugun["High"].max()), float(bugun["Low"].min()), float(bugun["Open"].iloc[0])
+            deg, gap = (c / dk - 1) * 100, (ac / dk - 1) * 100
+            konum = (c - gd) / (gy - gd) if gy > gd else 0.5
+            yer = "en yükseğine yakın" if konum >= 0.8 else "en düşüğüne yakın" if konum <= 0.2 else "aralığın ortasında"
+            olg.append((abs(deg) * 1.5 + 2, _sec([
+                f"Gün içi aralık {sayi(gd)}–{sayi(gy)}; fiyat {sayi(c)} ile günün {yer} (dünkü kapanışa göre {'+' if deg >= 0 else '−'}%{sayi(abs(deg), 1)}).",
+                f"Bugün {sayi(dk)} kapanışına göre {'+' if deg >= 0 else '−'}%{sayi(abs(deg), 1)}; gün içinde {sayi(gd)} ile {sayi(gy)} arasında gidip geldi, şu an {yer}.",
+            ], tohum)))
+            if abs(gap) >= 1:
+                olg.append((abs(gap) * 2, f"Güne {'+' if gap >= 0 else '−'}%{sayi(abs(gap), 1)} boşlukla ({'yukarı' if gap > 0 else 'aşağı'} gap) {sayi(ac)}'dan açtı"
+                                          + (", boşluk henüz kapanmadı." if (gap > 0 and gd > dk) or (gap < 0 and gy < dk) else ", boşluk gün içinde kapandı.")))
     else:
-        e50, e200 = A["EMA50"][i], A["EMA200"][i]
-        cumle.append(f"Günlük grafikte {yapi_metin[yapi]}; fiyat 50 günlük ortalamanın {'üstünde' if c > e50 else 'altında'}"
-                     + (f", ana trend {'yukarı' if e50 > e200 else 'aşağı'} (EMA50/200)." if not np.isnan(e200) else "."))
+        C = A["Close"]
+        if i >= 20:
+            h5, h20 = (c / C[i - 5] - 1) * 100, (c / C[i - 20] - 1) * 100
+            olg.append((abs(h20) / 2 + 2, f"Son 5 günde {'+' if h5 >= 0 else '−'}%{sayi(abs(h5), 1)}, son 20 günde {'+' if h20 >= 0 else '−'}%{sayi(abs(h20), 1)}."))
+
+    # 52 hafta zirve/dip (günlük veriden)
+    if gunluk is not None and len(gunluk) > 120:
+        yy, yd = float(gunluk["High"].tail(250).max()), float(gunluk["Low"].tail(250).min())
+        uz_y, uz_d = (yy / c - 1) * 100, (c / yd - 1) * 100
+        if uz_y <= 3:
+            olg.append((9 - uz_y, f"52 haftanın zirvesine ({sayi(yy)}) sadece %{sayi(uz_y, 1)} uzaklıkta; zirve bölgelerinde kâr satışı da kırılım da sert olur."))
+        elif uz_d <= 5:
+            olg.append((8 - uz_d, f"52 haftanın dibine ({sayi(yd)}) %{sayi(uz_d, 1)} yakın; burası uzun vadeli alıcıların izlediği bölge."))
+
+    # Trend ve yapı
+    htf = int(ctx["htf"][i])
+    yapi, _, _ = yapi_bul(ctx["pv"])
+    e20, e50 = nanv(A["EMA20"][i], c), nanv(A["EMA50"][i], c)
+    tr_m = {1: "yukarı", -1: "aşağı", 0: "kararsız"}
+    yp_m = {1: "yükselen tepe ve dipler", -1: "alçalan tepe ve dipler", 0: "belirgin bir yön olmadan"}
+    if mod != "w":
+        olg.append((3, _sec([f"Günlük trend {tr_m[htf]}; {dil} grafikte {yp_m[yapi]} var.",
+                             f"{dil} grafikte {yp_m[yapi]} görülüyor, üst zaman dilimi (günlük) {tr_m[htf]}."], tohum + 1)))
+    else:
+        olg.append((3, f"Günlük grafikte {yp_m[yapi]}; fiyat 50 günlük ortalamanın %{sayi(abs(c / e50 - 1) * 100, 1)} {'üstünde' if c > e50 else 'altında'}."))
+    # Ortalama kesişimi (yakın zamanda)
+    E20, E50 = A["EMA20"], A["EMA50"]
+    for k in range(1, min(30, i)):
+        if (E20[i - k] - E50[i - k]) * (E20[i - k + 1] - E50[i - k + 1]) < 0:
+            yukari = E20[i - k + 1] > E50[i - k + 1]
+            olg.append((7 - k * 0.2, f"20'lik ortalama {k} {'gün' if mod == 'w' else 'mum'} önce 50'liği {'yukarı' if yukari else 'aşağı'} kesti ({'olumlu' if yukari else 'olumsuz'} kesişim)."))
+            break
+    # MACD kesişimi
+    Mh = A["MACDh"]
+    for k in range(0, min(15, i)):
+        if nanv(Mh[i - k]) * nanv(Mh[i - k - 1]) < 0:
+            yk = nanv(Mh[i - k]) > 0
+            olg.append((6 - k * 0.3, f"MACD {('bu mumda' if k == 0 else f'{k} mum önce')} sinyal çizgisini {'yukarı' if yk else 'aşağı'} kesti; momentum {'güçleniyor' if yk else 'zayıflıyor'}."))
+            break
+    # RSI
+    r, r3 = nanv(A["RSI"][i], 50), nanv(A["RSI"][i - 3], 50)
+    if r >= 70 or r <= 30:
+        olg.append((7, f"RSI {r:.0f} ile {'aşırı alım' if r >= 70 else 'aşırı satım'} bölgesinde; {'yeni alım için geç, kâr satışı gelebilir' if r >= 70 else 'satış yorulmuş olabilir, tepki alımı gelebilir'}."))
+    elif abs(r - r3) >= 8:
+        olg.append((4, f"RSI son 3 mumda {r3:.0f}'dan {r:.0f}'a {'çıktı' if r > r3 else 'indi'}."))
+    # Mum serisi ve mum formasyonu
+    seri = 0
+    yesil = c >= o
+    for k in range(i, max(i - 12, 0), -1):
+        if (A["Close"][k] >= A["Open"][k]) == yesil:
+            seri += 1
+        else:
+            break
+    if seri >= 4:
+        olg.append((seri, f"Art arda {seri} {'yeşil' if yesil else 'kırmızı'} mum; {'alıcılar acele ediyor ama uzayan seriler genelde dinlenmeyle biter' if yesil else 'satış baskısı sürüyor, tepki için bir dönüş mumu beklenmeli'}."))
+    mm = mum_formasyon(A, i)
+    if mm:
+        olg.append((6, "Son mum: " + ", ".join(m_[0] for m_ in mm) + "."))
+    # Hacim
+    v, v20 = float(A["Volume"][i]), float(np.nanmean(A["Volume"][max(0, i - 20):i])) if i > 1 else 0
+    rv, ab = nanv(A["RVOL"][i]), nanv(A["AB"][i])
+    if v20 > 0 and v / v20 >= 1.8:
+        olg.append((5 + v / v20, f"Son mumun hacmi 20 mumluk ortalamanın {sayi(v / v20, 1)} katı; {'alıcı' if yesil else 'satıcı'} tarafta belirgin bir istek var."))
+    elif rv < 0.6:
+        olg.append((3, f"Hacim bu saat için normalin ancak %{rv * 100:.0f}'i kadar; sessiz piyasada kırılımlara temkinli yaklaş."))
+    if abs(ab) >= 0.2:
+        olg.append((4 + abs(ab) * 5, f"Son 20 mumun hacminin %{abs(ab) * 100:.0f} kadarı {'alıcı' if ab > 0 else 'satıcı'} yönlü işlemlerden geldi."))
+    # VWAP
     vw = A["VWAP"][i]
     if not np.isnan(vw):
-        fark = (c / vw - 1) * 100
-        kim = "alıcılar kârda, gün içi kontrol alıcılarda" if fark > 0 else "gün içi alanlar zararda, kontrol satıcılarda"
-        cumle.append(f"Fiyat gün içi ortalama maliyetin (VWAP {sayi(vw)}) %{sayi(abs(fark), 1)} {'üstünde' if fark > 0 else 'altında'}: {kim}.")
-    ab, rv = nanv(A["AB"][i]), nanv(A["RVOL"][i])
-    if ab > 0.15:
-        cumle.append(f"Son 20 mumda hacmin belirgin kısmı alıcı yönlü (alıcı baskısı %{ab * 100:.0f}).")
-    elif ab < -0.15:
-        cumle.append(f"Son 20 mumda satıcılar baskın (satıcı baskısı %{-ab * 100:.0f}).")
-    else:
-        cumle.append("Alıcı ve satıcı dengede, hacim akışında net taraf yok.")
-    if rv >= 1.5:
-        cumle.append(f"Hacim {'bu saat için' if ctx['mod'] != 'w' else 'son 10 güne göre'} normalin {sayi(rv, 1)} katı — hissede ilgi var.")
-    elif rv < 0.7:
-        cumle.append("Hacim normalin altında; kırılımlar güvenilir olmayabilir.")
-    p = ctx["prof_guncel"]
-    if p:
-        cumle.append(f"{({'1': 'Son 3 günde', '5': 'Son 6 günde', 'g': 'Son 10 günde'}).get(ctx['mod'], 'Son 12 haftada')} en çok işlem {sayi(p['poc'])} seviyesinde (POC); değer bölgesi {sayi(p['val'])}–{sayi(p['vah'])}.")
-    destek = max([x for x in sev if x < c], default=None)
-    direnc = min([x for x in sev if x > c], default=None)
-    if destek and direnc:
-        cumle.append(f"En yakın destek {sayi(destek)} (%{sayi((c / destek - 1) * 100, 1)} aşağıda), direnç {sayi(direnc)} (%{sayi((direnc / c - 1) * 100, 1)} yukarıda).")
+        f_ = (c / vw - 1) * 100
+        olg.append((abs(f_) * 2 + 1, _sec([
+            f"Gün içi ortalama maliyet (VWAP) {sayi(vw)}; fiyat bunun %{sayi(abs(f_), 1)} {'üstünde, bugün alanlar kârda' if f_ > 0 else 'altında, bugün alanlar zararda'}.",
+            f"Fiyat VWAP'ın ({sayi(vw)}) {'üstünde, gün içi kontrol alıcılarda' if f_ > 0 else 'altında, gün içi kontrol satıcılarda'}."], tohum + 2)))
+    # ADX, uyumsuzluk
     adx = nanv(A["ADX"][i], 0)
-    if adx:
-        cumle.append(f"Trend gücü (ADX) {adx:.0f}: " + ("güçlü trend var, kırılımlar daha güvenilir." if adx >= 25
-                     else "trend zayıf, fiyat yatay bantta; seviyeden dönüşler daha anlamlı." if adx < 18 else "orta güçte trend."))
+    if adx >= 30:
+        olg.append((5, f"ADX {adx:.0f}: güçlü trend var, trend yönündeki kırılımlar daha güvenilir."))
+    elif 0 < adx < 16:
+        olg.append((4, f"ADX {adx:.0f}: piyasa yatay; bant içinde destekten al, dirençten çık mantığı daha iyi çalışır."))
     um = uyumsuzluk(A, ctx["pv"], i)
     if um:
-        cumle.append("RSI " + ("pozitif uyumsuzluk: fiyat yeni dip yaparken momentum güçleniyor, dönüş gelebilir." if um > 0
-                     else "negatif uyumsuzluk: fiyat yeni tepe yaparken momentum zayıflıyor, düzeltme gelebilir."))
-    mm = [m_ for m_ in mum_formasyon(A, i)]
-    if mm:
-        cumle.append("Son mum: " + ", ".join(m_[0] for m_ in mm) + ".")
+        olg.append((8, "RSI " + ("pozitif uyumsuzluk veriyor: fiyat daha düşük dip yaptı ama momentum daha güçlü." if um > 0
+                                 else "negatif uyumsuzluk veriyor: fiyat daha yüksek tepe yaptı ama momentum zayıf.")))
+    # En yakın bölgeler: test sayısı ve son test zamanı
+    ust = sorted([d for d in sev_d if d["lo"] > c], key=lambda d: d["lo"])
+    alt = sorted([d for d in sev_d if d["hi"] < c], key=lambda d: -d["hi"])
+    icinde = [d for d in sev_d if d["lo"] <= c <= d["hi"]]
+    if icinde:
+        d = icinde[0]
+        olg.append((9, f"Fiyat şu an {sayi(d['lo'])}–{sayi(d['hi'])} bölgesinin içinde; bu bölge {d['temas']} kez tepki gördü, buradan çıkış yönü önemli."))
+    if ust:
+        d = ust[0]
+        uz = (d["lo"] / c - 1) * 100
+        olg.append((7 - min(uz, 5), _sec([
+            f"Yukarıdaki ilk direnç {sayi(d['lo'])}–{sayi(d['hi'])} (%{sayi(uz, 1)} yukarıda): {d['ust_n']} kez satış gördü, en son {_zaman_yaz(df, d['son'], mod)}.",
+            f"{sayi(d['lo'])}–{sayi(d['hi'])} arası direnç; fiyat buradan {d['ust_n']} kez geri döndü (son test {_zaman_yaz(df, d['son'], mod)}). Mesafe %{sayi(uz, 1)}."], tohum + 3)))
+    if alt:
+        d = alt[0]
+        uz = (c / d["hi"] - 1) * 100
+        olg.append((7 - min(uz, 5), _sec([
+            f"Aşağıdaki ilk destek {sayi(d['lo'])}–{sayi(d['hi'])} (%{sayi(uz, 1)} aşağıda): {d['alt_n']} kez alıcı geldi, en son {_zaman_yaz(df, d['son'], mod)}.",
+            f"Destek {sayi(d['lo'])}–{sayi(d['hi'])}; burada {d['alt_n']} kez alım tepkisi oldu (son {_zaman_yaz(df, d['son'], mod)})" + (", eski direnç desteğe dönmüş." if d.get("rol") else ".")], tohum + 4)))
+    if not ust and len(sev_d):
+        olg.append((6, "Fiyat görünen tüm direnç bölgelerinin üstünde; yukarıda referans seviye yok, hedefler oynaklığa göre hesaplanır."))
+    # Profil
+    p = ctx["prof_guncel"]
+    if p:
+        olg.append((2, f"{({'1': 'Son 3 günde', '5': 'Son 6 günde', 'g': 'Son 10 günde'}).get(mod, 'Son 12 haftada')} en çok işlem {sayi(p['poc'])} fiyatında yapıldı; değer bölgesi {sayi(p['val'])}–{sayi(p['vah'])}."))
+    # Endekse göre güç
+    rs = float(ctx["rs"][i])
+    if abs(rs) >= 2:
+        olg.append((3 + abs(rs) / 2, f"BIST100'e göre %{sayi(abs(rs), 1)} {'daha güçlü' if rs > 0 else 'daha zayıf'} gidiyor."))
+    # Oynaklık
+    olg.append((1.5, f"Bir {('günlük' if mod == 'w' else dil)} mumun ortalama oynaklığı %{sayi(atr / c * 100, 2)} ({sayi(atr)} TL)."))
+    # Oluşan formasyonlar
     for f in formlar:
         if f["durum"] == "oluşuyor":
             yon = "yukarı" if f["yon"] > 0 else ("aşağı" if f["yon"] < 0 else "iki yöne de")
-            cumle.append(f"{f['ad']} oluşuyor; {yon} kırılım izlenmeli" + (f" (kritik {sayi(f['ref'])})." if f["ref"] else "."))
+            olg.append((7, f"{f['ad']} oluşuyor; {yon} kırılım izlenmeli" + (f", kritik seviye {sayi(f['ref'])}." if f["ref"] else ".")))
 
+    olg.sort(key=lambda x: -x[0])
+    cumle = [m for _, m in olg[:8]]
+    direnc = min([d["lo"] for d in ust], default=None)
+    destek = max([d["hi"] for d in alt], default=None)
     return cumle, dict(ust=_r(direnc, 4), alt=_r(destek, 4))
 
 
@@ -1340,7 +1510,8 @@ def hisse_analiz(sym, df15, gunluk, xu15, son_kapali, tam_test=False, mod="g") -
     gunluk_tl = None
     if gunluk is not None and len(gunluk) >= 5:
         gunluk_tl = float((gunluk["Close"] * gunluk["Volume"]).tail(20).mean() / 1e6)
-    return dict(sym=sym, ctx=ctx, sinyaller=sinyaller, formlar=formlar, sev=sev, fiyat=fiyat, degisim=degisim,
+    yorum, tetik = bot_yorumu(ctx, sev_d, formlar, gunluk, sym)
+    return dict(sym=sym, ctx=ctx, sinyaller=sinyaller, formlar=formlar, sev=sev, fiyat=fiyat, degisim=degisim, yorum=yorum, tetik=tetik,
                 rv=nanv(A["RVOL"][i]), ab=nanv(A["AB"][i]), vwap=nanv(A["VWAP"][i], None), rsi=nanv(A["RSI"][i], 50),
                 macd=nanv(A["MACDh"][i]), atr=nanv(A["ATR"][i]) / fiyat * 100, yapi=yapi_bul(ctx["pv"])[0],
                 htf=int(ctx["htf"][i]), rs=float(ctx["rs"][i]), birikim=birikim, likidite=gunluk_tl,
@@ -1355,38 +1526,31 @@ def hisse_analiz(sym, df15, gunluk, xu15, son_kapali, tam_test=False, mod="g") -
 ARAYUZ = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
-:root{--bg:#060912;--card:rgba(255,255,255,.04);--card2:rgba(255,255,255,.07);--cardS:#0d1322;--ln:rgba(255,255,255,.08);--ln2:rgba(255,255,255,.05);
---tx:#eef1f8;--mu:#8b93a7;--mu2:#5b6378;--ac:#7c6cff;--ac2:#22d3ee;--acT:#a99bff;--grad:linear-gradient(135deg,#7c6cff 0%,#22d3ee 100%);--acs:rgba(124,108,255,.16);
---up:#2fe0a0;--ups:rgba(47,224,160,.13);--dn:#ff5c7c;--dns:rgba(255,92,124,.13);--wa:#ffb547;--was:rgba(255,181,71,.15);
---r:22px;--sh:0 14px 34px -16px rgba(0,0,0,.7);--nav:rgba(13,18,32,.8)}
-html.acik{--bg:#f1f3f9;--card:#ffffff;--card2:#eef1f8;--cardS:#ffffff;--ln:rgba(15,23,42,.08);--ln2:rgba(15,23,42,.05);--tx:#0f1729;--mu:#5d6779;--mu2:#9aa3b5;
---acT:#6252f5;--up:#0fae78;--ups:rgba(15,174,120,.11);--dn:#e8395e;--dns:rgba(232,57,94,.1);--wa:#d98a0b;--sh:0 12px 30px -18px rgba(30,41,80,.35);--nav:rgba(255,255,255,.86)}
+:root{--bg:#0d1726;--bg2:#0a1220;--card:#132136;--card2:#1a2b44;--cardS:#132136;--ln:#22344f;--ln2:#1b2b42;
+--tx:#e9eff7;--mu:#8fa0b8;--mu2:#5d7090;--ac:#f5b83d;--acT:#f5b83d;--acInk:#1d1404;--acs:rgba(245,184,61,.14);--grad:linear-gradient(#f5b83d,#f5b83d);
+--up:#3ddc97;--ups:rgba(61,220,151,.13);--dn:#ff6b6b;--dns:rgba(255,107,107,.13);--wa:#f5b83d;--was:rgba(245,184,61,.15);
+--r:20px;--sh:none;--nav:#132136;--disp:'Bricolage Grotesque',Figtree,system-ui,sans-serif}
+html.acik{--bg:#eef3f9;--bg2:#e4ebf4;--card:#ffffff;--card2:#eef3f9;--cardS:#ffffff;--ln:#d6e0ec;--ln2:#e6edf5;--tx:#0f1d31;--mu:#58687f;--mu2:#93a2b6;
+--acT:#b07806;--up:#0e9f68;--ups:rgba(14,159,104,.1);--dn:#e0464b;--dns:rgba(224,70,75,.09);--wa:#b07806;--was:rgba(245,184,61,.18);--nav:#ffffff}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font:14px/1.45 Manrope,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font:14px/1.45 Figtree,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
 body{overflow:hidden}button,input,select{font-family:inherit;color:inherit}button{cursor:pointer;border:0;background:none;padding:0}
 .n{font-variant-numeric:tabular-nums}
 .up{color:var(--up)}.dn{color:var(--dn)}.mu{color:var(--mu)}.wa{color:var(--wa)}.act{color:var(--acT)}
 .lbl{font-size:11.5px;font-weight:700;color:var(--mu)}
-.aurora{position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0}
-.aurora i{position:absolute;border-radius:50%;filter:blur(80px)}
-.aurora i:nth-child(1){width:360px;height:360px;background:#5b47ff;opacity:.38;top:-170px;left:-120px;animation:y1 18s ease-in-out infinite alternate}
-.aurora i:nth-child(2){width:300px;height:300px;background:#0ea5c6;opacity:.26;top:-110px;right:-150px;animation:y2 22s ease-in-out infinite alternate}
-.aurora i:nth-child(3){width:320px;height:320px;background:#2fe0a0;opacity:.08;bottom:-180px;left:15%;animation:y1 26s ease-in-out infinite alternate-reverse}
-html.acik .aurora i{opacity:.13}
-@keyframes y1{to{transform:translate(70px,50px) scale(1.15)}}@keyframes y2{to{transform:translate(-60px,70px) scale(.9)}}
 #app{position:relative;z-index:1;display:flex;flex-direction:column;height:100%}
 /* üst */
 .ust{flex:none;padding:12px 16px 6px}
 .ust1{display:flex;align-items:center;gap:8px}
 .logo{display:flex;align-items:center;gap:10px;margin-right:auto}
-.logo svg{width:38px;height:38px;filter:drop-shadow(0 8px 16px rgba(124,108,255,.45))}
-.logo b{display:block;font-size:18px;font-weight:800;letter-spacing:-.03em;line-height:1.05}
-.logo b span{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-.logo small{display:block;white-space:nowrap;font-size:10.5px;color:var(--mu);font-weight:700;letter-spacing:.03em}
-.sweep{transform-origin:20px 21px;animation:don 4s linear infinite}@keyframes don{to{transform:rotate(360deg)}}
+.logo svg{width:38px;height:38px}
+.logo b{display:block;font:800 19px/1.05 var(--disp);letter-spacing:-.02em}
+.logo b span{color:var(--ac)}
+.logo small{display:block;white-space:nowrap;font-size:11px;color:var(--mu);font-weight:600}
+.sweep{transform-origin:20px 20px;animation:don 4s linear infinite}@keyframes don{to{transform:rotate(360deg)}}
 .ikon{width:38px;height:38px;border-radius:13px;background:var(--card);border:1px solid var(--ln);display:grid;place-items:center;position:relative;transition:transform .15s;flex:none;color:var(--tx);text-decoration:none}
 .ikon:active{transform:scale(.9)}.ikon svg{width:18px;height:18px}
 .rz{position:absolute;top:-5px;right:-5px;background:var(--dn);color:#fff;font-size:9.5px;font-weight:800;border-radius:9px;padding:1px 5px;min-width:17px;text-align:center;box-shadow:0 0 0 2px var(--bg);animation:pop .4s cubic-bezier(.3,1.6,.5,1)}
@@ -1394,38 +1558,37 @@ html.acik .aurora i{opacity:.13}
 .canli{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:800;color:var(--mu);background:var(--card);border:1px solid var(--ln);padding:6px 10px;border-radius:99px;white-space:nowrap}
 .nokta{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--mu2);flex:none}
 .nokta.on{background:var(--up);animation:nabiz 1.8s infinite}.nokta.wa{background:var(--wa)}
-@keyframes nabiz{0%{box-shadow:0 0 0 0 rgba(47,224,160,.6)}70%{box-shadow:0 0 0 8px rgba(47,224,160,0)}100%{box-shadow:0 0 0 0 rgba(47,224,160,0)}}
+@keyframes nabiz{0%{box-shadow:0 0 0 0 rgba(61,220,151,.6)}70%{box-shadow:0 0 0 8px rgba(61,220,151,0)}100%{box-shadow:0 0 0 0 rgba(61,220,151,0)}}
 .dilim{position:relative;display:flex;margin-top:12px;background:var(--card);border:1px solid var(--ln);border-radius:15px;padding:4px}
-.dilim .ind{position:absolute;top:4px;bottom:4px;left:0;border-radius:11px;background:var(--grad);box-shadow:0 8px 18px -8px rgba(124,108,255,.9);transition:transform .45s cubic-bezier(.3,1.25,.5,1),width .3s}
+.dilim .ind{position:absolute;top:4px;bottom:4px;left:0;border-radius:11px;background:var(--ac);transition:transform .45s cubic-bezier(.3,1.25,.5,1),width .3s}
 .dilim button{position:relative;flex:1;font-weight:800;font-size:12.5px;color:var(--mu);padding:8px 0;transition:color .3s;z-index:1}
-.dilim button.on{color:#fff}
+.dilim button.on{color:var(--acInk)}
 .vade-bant{display:flex;justify-content:space-between;font-size:11.5px;color:var(--mu);padding:8px 3px 2px;font-weight:600}.vade-bant b{color:var(--tx)}
 main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:touch;scrollbar-width:none}main::-webkit-scrollbar{display:none}
 /* genel */
-.kart{background:var(--card);border:1px solid var(--ln);border-radius:var(--r);box-shadow:var(--sh);position:relative;overflow:hidden}
+.kart{background:var(--card);border:1px solid var(--ln);border-radius:var(--r);position:relative;overflow:hidden}
 .pad{padding:16px}
 .bolum{display:flex;align-items:center;justify-content:space-between;margin:26px 2px 11px}
-.bolum h3{margin:0;font-size:16px;font-weight:800;letter-spacing:-.02em}
+.bolum h3{margin:0;font:700 17px/1.2 var(--disp);letter-spacing:-.01em}
 .bolum a,.link{font-size:12.5px;font-weight:800;color:var(--acT);cursor:pointer}
-.anim>*{animation:yuksel .6s cubic-bezier(.2,.8,.2,1) both}
-.anim>*:nth-child(2){animation-delay:.05s}.anim>*:nth-child(3){animation-delay:.1s}.anim>*:nth-child(4){animation-delay:.15s}.anim>*:nth-child(5){animation-delay:.2s}
-.anim>*:nth-child(6){animation-delay:.25s}.anim>*:nth-child(7){animation-delay:.3s}.anim>*:nth-child(8){animation-delay:.35s}.anim>*:nth-child(n+9){animation-delay:.4s}
+.anim{animation:gecis .28s ease-out both}
+@keyframes gecis{from{opacity:0;transform:translateY(6px)}}
 @keyframes yuksel{from{opacity:0;transform:translateY(16px)}}
 .rozet{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:800;padding:4px 10px;border-radius:99px;background:var(--card2);color:var(--mu);white-space:nowrap}
 .rozet.up{background:var(--ups);color:var(--up)}.rozet.dn{background:var(--dns);color:var(--dn)}.rozet.ac{background:var(--acs);color:var(--acT)}.rozet.wa{background:var(--was);color:var(--wa)}
 .yon{display:inline-block;font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:7px;letter-spacing:.03em;vertical-align:1px}
 .yon.al{background:var(--ups);color:var(--up)}.yon.sat{background:var(--dns);color:var(--dn)}
 .kal{display:inline-block;font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:7px;background:var(--card2);color:var(--mu);vertical-align:1px}
-.kal.Ap{background:linear-gradient(135deg,#ffcf6b,#ff9f43);color:#2a1700}.kal.A{background:var(--acs);color:var(--acT)}
+.kal.Ap{background:var(--ac);color:var(--acInk)}.kal.A{background:var(--acs);color:var(--acT)}
 .dl{display:inline-block;font-size:10.5px;font-weight:700;color:var(--mu);background:var(--card2);padding:2px 7px;border-radius:7px}
 .avatar{display:grid;place-items:center;border-radius:13px;font-weight:800;font-size:11.5px;color:#fff;flex:none;letter-spacing:.02em;box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
 .alan{display:block;width:100%;animation:ac 1.4s cubic-bezier(.4,0,.2,1) both}
 @keyframes ac{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
-.buyuk{font-size:34px;font-weight:800;letter-spacing:-.035em;line-height:1.1}
+.buyuk{font:800 36px/1.05 var(--disp);letter-spacing:-.03em}
 .satir{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sat1{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .btn{flex:1;border-radius:15px;padding:13px;font-weight:800;font-size:13.5px;background:var(--card2);border:1px solid var(--ln);transition:transform .15s;display:inline-flex;align-items:center;justify-content:center;gap:7px}
-.btn:active{transform:scale(.96)}.btn.ana{background:var(--grad);border:0;color:#fff;box-shadow:0 12px 24px -12px rgba(124,108,255,.95)}.btn.kir{color:var(--dn)}
+.btn:active{transform:scale(.96)}.btn.ana{background:var(--ac);border:0;color:var(--acInk)}.btn.kir{color:var(--dn)}
 .btn svg{width:16px;height:16px}
 .dugmeler{display:flex;gap:8px;padding:14px 16px 16px}
 .seg{display:flex;gap:4px;background:var(--card);border:1px solid var(--ln);border-radius:15px;padding:4px;margin-bottom:12px;overflow-x:auto;scrollbar-width:none}.seg::-webkit-scrollbar{display:none}
@@ -1433,7 +1596,7 @@ main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:to
 .seg button.on{background:var(--card2);color:var(--tx);box-shadow:0 4px 12px -4px rgba(0,0,0,.4)}
 .chips{display:flex;gap:7px;overflow-x:auto;margin:0 -16px 12px;padding:0 16px;scrollbar-width:none}.chips::-webkit-scrollbar{display:none}
 .chip{flex:none;color:var(--mu);background:var(--card);border:1px solid var(--ln);border-radius:99px;padding:7px 13px;font-size:12.5px;font-weight:700;transition:all .2s}
-.chip.on{color:#fff;background:var(--grad);border-color:transparent;box-shadow:0 6px 14px -8px rgba(124,108,255,.9)}.chip:disabled{opacity:.35}
+.chip.on{color:var(--acInk);background:var(--ac);border-color:var(--ac)}.chip:disabled{opacity:.35}
 .bos{border:1.5px dashed var(--ln);border-radius:var(--r);padding:26px 18px;text-align:center;color:var(--mu);line-height:1.55;font-size:13px}.bos b{display:block;color:var(--tx);margin-bottom:4px;font-size:14px}
 .not{color:var(--mu);font-size:12px;line-height:1.6;margin:12px 2px 0}
 .acik-not{color:var(--mu);font-size:12.5px;line-height:1.55;margin:0 2px 12px}
@@ -1449,7 +1612,7 @@ main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:to
 .tile{padding:14px;border-radius:19px;background:var(--card);border:1px solid var(--ln);display:flex;gap:11px;align-items:center;cursor:pointer;transition:transform .15s}
 .tile:active{transform:scale(.97)}
 .tile .ik{width:40px;height:40px;border-radius:13px;display:grid;place-items:center;flex:none}.tile .ik svg{width:20px;height:20px}
-.tile b{display:block;font-size:19px;font-weight:800;letter-spacing:-.02em;line-height:1.2}.tile small{font-size:11.5px;color:var(--mu);font-weight:700}
+.tile b{display:block;font:800 21px/1.15 var(--disp);letter-spacing:-.01em}.tile small{font-size:11.5px;color:var(--mu);font-weight:700}
 .yatay{display:flex;gap:12px;overflow-x:auto;margin:0 -16px;padding:2px 16px 8px;scroll-snap-type:x mandatory;scrollbar-width:none}.yatay::-webkit-scrollbar{display:none}
 .skart{flex:none;width:236px;scroll-snap-align:start;padding:15px;cursor:pointer;transition:transform .2s}.skart:active{transform:scale(.97)}
 .skart::before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:var(--up)}.skart.sat::before{background:var(--dn)}
@@ -1460,11 +1623,11 @@ main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:to
 .halka svg{width:100%;height:100%;transform:rotate(-90deg)}.halka circle{fill:none;stroke-width:4;stroke-linecap:round}
 .halka .hz{stroke:var(--card2)}.halka .hd{stroke-dasharray:var(--v) 100;animation:hk 1.2s cubic-bezier(.2,.8,.2,1) both}
 @keyframes hk{from{stroke-dasharray:0 100}}
-.halka b{position:absolute;inset:0;display:grid;place-items:center;font-size:13px;font-weight:800}
-.botmini{cursor:pointer;margin-top:12px;background:linear-gradient(135deg,rgba(124,108,255,.18),rgba(34,211,238,.07));border-color:rgba(124,108,255,.3)}
+.halka b{position:absolute;inset:0;display:grid;place-items:center;font:800 14px var(--disp)}
+.botmini{cursor:pointer;margin-top:12px}
 .botbas{display:flex;align-items:center;gap:11px}.botbas b{display:block;font-size:15px;font-weight:800}.botbas small{display:block;font-size:11.5px;color:var(--mu);font-weight:600}
-.botik{width:42px;height:42px;border-radius:14px;background:var(--grad);display:grid;place-items:center;flex:none;box-shadow:0 10px 20px -10px rgba(124,108,255,.9)}
-.botik svg{width:22px;height:22px;color:#fff}
+.botik{width:42px;height:42px;border-radius:14px;background:var(--ac);display:grid;place-items:center;flex:none}
+.botik svg{width:22px;height:22px;color:var(--acInk)}
 .goz{animation:goz 4s infinite}@keyframes goz{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.1)}}
 .liste>div{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--ln2);cursor:pointer;transition:background .2s}
 .liste>div:last-child{border-bottom:0}.liste>div:active{background:var(--card2)}
@@ -1485,6 +1648,34 @@ main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:to
 .harita{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
 .harita div{padding:10px 2px;text-align:center;cursor:pointer;border-radius:12px;transition:transform .15s;animation:yuksel .5s both}
 .harita div:active{transform:scale(.93)}.harita b{display:block;font-size:11px;font-weight:800}.harita span{font-size:10.5px;font-weight:700;opacity:.9}
+.radarkart{border-radius:28px;padding:18px 16px 16px}
+.radar{position:relative;width:min(100%,330px);aspect-ratio:1;margin:4px auto 0}
+.radar svg.iz{position:absolute;inset:0;width:100%;height:100%}
+.radar .tarama{position:absolute;inset:4%;border-radius:50%;background:conic-gradient(from 0deg,rgba(245,184,61,0) 0deg,rgba(245,184,61,0) 290deg,rgba(245,184,61,.22) 350deg,rgba(245,184,61,.5) 360deg);animation:don 6s linear infinite}
+.radar .tarama::after{content:"";position:absolute;left:50%;top:0;width:2px;height:50%;margin-left:-1px;background:linear-gradient(var(--ac),rgba(245,184,61,.2));border-radius:2px}
+.radar .nok{position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;cursor:pointer}
+.radar .nok::before{content:"";position:absolute;inset:0;border-radius:50%;background:var(--c);opacity:.4;animation:blip 6s linear infinite both;animation-delay:var(--d)}
+.radar .nok.b{width:14px;height:14px;margin:-7px 0 0 -7px}
+.radar .nok i{position:absolute;left:14px;top:50%;transform:translateY(-50%);font:700 11px var(--disp);color:var(--tx);white-space:nowrap;font-style:normal;text-shadow:0 1px 3px var(--bg)}
+.radar .nok.sol i{left:auto;right:14px}
+@keyframes blip{0%{opacity:1;transform:scale(1.7);box-shadow:0 0 0 6px rgba(255,255,255,.12)}6%{opacity:1;transform:scale(1)}55%{opacity:.4}100%{opacity:.4}}
+.radar .merkez{position:absolute;left:50%;top:50%;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;background:var(--ac);box-shadow:0 0 0 4px rgba(245,184,61,.2)}
+.radar-alt{display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-top:12px}
+.radar-alt b{display:block;font:800 30px/1 var(--disp);letter-spacing:-.02em}
+.radar-alt small{font-size:12.5px;color:var(--mu);font-weight:600}
+.radar-alt .sag2{text-align:right;font-size:12.5px;font-weight:700;line-height:1.7}
+.bistsat{display:flex;align-items:center;gap:14px;padding:14px 16px;margin-top:12px}
+.bistsat .alan{height:48px;width:120px;flex:none}
+.hb{display:flex;gap:11px;padding:12px 14px;border-bottom:1px solid var(--ln2);text-decoration:none;color:inherit}
+.hb:last-child{border-bottom:0}
+.hb .hp{width:8px;border-radius:4px;flex:none;align-self:stretch}
+.hb p{margin:0;font-size:13.5px;font-weight:600;line-height:1.45}
+.hb small{display:block;color:var(--mu);font-size:11.5px;font-weight:600;margin-top:4px}
+.durumlar{display:flex;gap:6px;flex-wrap:wrap;padding:12px 16px 0}
+.anahtar{display:flex;align-items:center;justify-content:space-between;background:var(--card2);border-radius:15px;padding:12px 14px;cursor:pointer}
+.anahtar .tg{width:46px;height:28px;border-radius:99px;background:var(--ln);position:relative;transition:background .2s;flex:none}
+.anahtar .tg::after{content:"";position:absolute;left:3px;top:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:transform .2s}
+.anahtar.on .tg{background:var(--ac)}.anahtar.on .tg::after{transform:translateX(18px)}
 /* fiş */
 .fis{margin-bottom:12px}
 .fis::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--up)}.fis.fsat::before{background:var(--dn)}
@@ -1517,18 +1708,17 @@ main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:to
 .tbl td{padding:11px 10px;border-bottom:1px solid var(--ln2);text-align:right;font-size:12.5px;white-space:nowrap;font-weight:700}
 .tbl tr:last-child td{border-bottom:0}.tbl tr[data-h]{cursor:pointer}
 /* bot */
-.bothero{background:linear-gradient(160deg,rgba(124,108,255,.2),rgba(34,211,238,.05) 55%,var(--card));border-color:rgba(124,108,255,.32)}
-.bothero::after{content:"";position:absolute;width:220px;height:220px;border-radius:50%;right:-80px;top:-90px;background:radial-gradient(circle,rgba(124,108,255,.35),transparent 70%);pointer-events:none}
+.bothero{border-radius:28px;border-color:rgba(245,184,61,.35)}
 #botGrafik{height:170px;margin-top:6px;position:relative}
 .botalt{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 16px 0}
-.botalt div{background:var(--card2);border-radius:14px;padding:10px 11px}.botalt b{display:block;font-size:16px;font-weight:800;margin-top:1px}.botalt small{font-size:10.5px;color:var(--mu);font-weight:700}
+.botalt div{background:var(--card2);border-radius:14px;padding:10px 11px}.botalt b{display:block;font:800 18px/1.2 var(--disp);margin-top:1px}.botalt small{font-size:10.5px;color:var(--mu);font-weight:700}
 .istat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.istat div{background:var(--card);border:1px solid var(--ln);border-radius:16px;padding:12px}.istat b{display:block;font-size:17px;font-weight:800;margin-top:2px;letter-spacing:-.02em}
+.istat div{background:var(--card);border:1px solid var(--ln);border-radius:16px;padding:12px}.istat b{display:block;font:800 19px/1.2 var(--disp);margin-top:2px}
 .gauge{position:relative;width:220px;max-width:100%;margin:6px auto 0}
 .gauge svg{width:100%;display:block}.gauge .gd{animation:gd 1.6s cubic-bezier(.2,.8,.2,1) both}@keyframes gd{from{stroke-dasharray:0 100}}
-.gauge .gv{position:absolute;left:0;right:0;bottom:14px;text-align:center}.gauge .gv b{display:block;font-size:38px;font-weight:800;letter-spacing:-.04em;line-height:1}.gauge .gv span{font-size:12.5px;font-weight:800}
+.gauge .gv{position:absolute;left:0;right:0;bottom:14px;text-align:center}.gauge .gv b{display:block;font:800 40px/1 var(--disp);letter-spacing:-.03em}.gauge .gv span{font-size:12.5px;font-weight:800}
 .bilesen>div{margin-top:12px}.bilesen .ust3{display:flex;justify-content:space-between;font-size:12.5px;font-weight:700}
-.bar{height:8px;border-radius:99px;background:var(--card2);margin-top:6px;overflow:hidden}.bar i{display:block;height:100%;border-radius:99px;background:var(--grad);transform-origin:left;animation:uza 1.2s cubic-bezier(.2,.8,.2,1) both}
+.bar{height:8px;border-radius:99px;background:var(--card2);margin-top:6px;overflow:hidden}.bar i{display:block;height:100%;border-radius:99px;background:var(--ac);transform-origin:left;animation:uza 1.2s cubic-bezier(.2,.8,.2,1) both}
 .donut{display:flex;align-items:center;gap:16px}.donut svg{width:96px;height:96px;transform:rotate(-90deg);flex:none}
 .donut circle{fill:none;stroke-width:12}.donut .dk{animation:hk 1.3s cubic-bezier(.2,.8,.2,1) both}
 .leg{flex:1}.leg div{display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:12.5px;font-weight:700}.leg i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:7px}
@@ -1544,10 +1734,10 @@ main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:to
 .kayit{display:flex;align-items:center;gap:10px;margin-top:12px;padding:11px 14px;border-radius:16px;font-size:12.5px;font-weight:700;cursor:pointer;border:1px solid var(--ln);background:var(--card)}
 .kayit .ki{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;flex:none;font-size:14px}
 .kayit.ok .ki{background:var(--ups);color:var(--up)}.kayit.uyar{border-color:rgba(255,181,71,.35);background:var(--was)}.kayit.uyar .ki{background:rgba(255,181,71,.25);color:var(--wa)}
-.kayit.hata{border-color:rgba(255,92,124,.35);background:var(--dns)}.kayit.hata .ki{background:rgba(255,92,124,.22);color:var(--dn)}
+.kayit.hata{border-color:rgba(255,107,107,.35);background:var(--dns)}.kayit.hata .ki{background:rgba(255,107,107,.22);color:var(--dn)}
 .kayit small{display:block;color:var(--mu);font-weight:600;font-size:11.5px;margin-top:1px}
 .adimlar{counter-reset:a;margin:0;padding:0;list-style:none}.adimlar li{counter-increment:a;position:relative;padding:0 0 14px 40px;font-size:13px;line-height:1.55;font-weight:600}
-.adimlar li::before{content:counter(a);position:absolute;left:0;top:-2px;width:28px;height:28px;border-radius:10px;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-size:13px}
+.adimlar li::before{content:counter(a);position:absolute;left:0;top:-2px;width:28px;height:28px;border-radius:50%;background:var(--ac);color:var(--acInk);display:grid;place-items:center;font-weight:800;font-size:13px}
 .kod{display:block;background:var(--card2);border:1px solid var(--ln);border-radius:12px;padding:10px 12px;font:600 12px ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;margin-top:6px;user-select:all}
 .log>div{display:flex;gap:11px;padding:11px 14px;border-bottom:1px solid var(--ln2)}.log>div:last-child{border-bottom:0}
 .log .li{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;flex:none;font-size:13px}
@@ -1561,7 +1751,7 @@ main{flex:1;overflow-y:auto;padding:6px 16px 120px;-webkit-overflow-scrolling:to
 .form-ayar label{background:var(--card);border:1px solid var(--ln);border-radius:16px;padding:11px 12px;display:block}
 .form-ayar input,.form-ayar select{width:100%;background:none;border:0;outline:0;font-size:16px;font-weight:800;padding:4px 0 0}
 .form-ayar select option{background:var(--cardS)}.form-ayar .genis{grid-column:1/-1}
-input[type=range]{width:100%;accent-color:#7c6cff}
+input[type=range]{width:100%;accent-color:#f5b83d}
 select{background:var(--card);border:1px solid var(--ln);border-radius:11px;padding:7px 9px;font-size:12.5px;font-weight:700}
 .ara{display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--ln);border-radius:16px;padding:0 14px;margin-bottom:12px}
 .ara svg{width:18px;height:18px;color:var(--mu);flex:none}
@@ -1576,13 +1766,13 @@ select{background:var(--card);border:1px solid var(--ln);border-radius:11px;padd
 .profil .va i{background:rgba(124,108,255,.55)}.profil .poc i{background:var(--wa)}.profil .poc span{color:var(--wa)}
 .profil .simdi span{color:var(--tx)}.profil .simdi::after{content:"◂";color:var(--tx)}
 /* alt menü */
-nav.alt{position:fixed;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));display:flex;align-items:center;background:var(--nav);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border:1px solid var(--ln);border-radius:26px;padding:6px;box-shadow:0 22px 44px -14px rgba(0,0,0,.75);z-index:10}
+nav.alt{position:fixed;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));display:flex;align-items:center;background:var(--nav);border:1px solid var(--ln);border-radius:26px;padding:6px;box-shadow:0 18px 36px -18px rgba(0,0,0,.6);z-index:10}
 nav.alt button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;color:var(--mu2);font-size:10.5px;font-weight:800;position:relative;transition:color .3s;z-index:1}
 nav.alt button svg{width:21px;height:21px;transition:transform .35s cubic-bezier(.3,1.5,.5,1)}
-nav.alt button.on{color:var(--tx)}nav.alt button.on svg{transform:translateY(-1px) scale(1.1);color:var(--acT)}
+nav.alt button.on{color:var(--tx)}nav.alt button.on svg{transform:translateY(-1px) scale(1.08);color:var(--ac)}
 .nav-ind{position:absolute;top:6px;bottom:6px;left:0;border-radius:20px;background:var(--card2);transition:transform .45s cubic-bezier(.3,1.25,.5,1),width .3s,opacity .3s}
-.nav-bot .bd{width:52px;height:52px;margin-top:-28px;border-radius:19px;background:var(--grad);display:grid;place-items:center;box-shadow:0 12px 26px -8px rgba(124,108,255,.9),0 0 0 5px var(--bg);transition:transform .35s cubic-bezier(.3,1.5,.5,1)}
-.nav-bot .bd svg{color:#fff!important;width:24px;height:24px}.nav-bot.on .bd{transform:translateY(-3px) rotate(-8deg)}
+.nav-bot .bd{width:54px;height:54px;margin-top:-30px;border-radius:50%;background:var(--ac);display:grid;place-items:center;box-shadow:0 0 0 6px var(--bg);transition:transform .35s cubic-bezier(.3,1.5,.5,1)}
+.nav-bot .bd svg{color:var(--acInk)!important;width:25px;height:25px}.nav-bot.on .bd{transform:translateY(-3px) rotate(-8deg)}
 nav.alt .rz{top:0;right:calc(50% - 22px)}
 /* detay ve sayfa altı kartlar */
 #detay{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;transform:translateY(102%);transition:transform .5s cubic-bezier(.2,.9,.2,1);z-index:20}
@@ -1590,7 +1780,7 @@ nav.alt .rz{top:0;right:calc(50% - 22px)}
 .dust{display:flex;align-items:center;gap:10px;padding:12px 16px}
 .dust b{display:block;font-size:17px;font-weight:800}.dust small{display:block;color:var(--mu);font-size:11.5px;font-weight:600}
 #dicerik{flex:1;overflow-y:auto;padding-bottom:30px;scrollbar-width:none}#dicerik::-webkit-scrollbar{display:none}
-.dfiyat{display:flex;align-items:baseline;gap:10px;padding:4px 16px}.dfiyat b{font-size:34px;font-weight:800;letter-spacing:-.035em}
+.dfiyat{display:flex;align-items:baseline;gap:10px;padding:4px 16px}.dfiyat b{font:800 36px/1.05 var(--disp);letter-spacing:-.03em}
 .distat{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:10px 16px 0}
 .distat div{background:var(--card);border:1px solid var(--ln);border-radius:14px;padding:9px}.distat b{display:block;font-size:13.5px;font-weight:800;margin-top:2px}
 .karar{margin:12px 16px 0;padding:13px 14px;border-radius:16px;background:var(--card);border:1px solid var(--ln);font-size:13px;line-height:1.55;font-weight:600;position:relative;overflow:hidden}
@@ -1600,25 +1790,25 @@ nav.alt .rz{top:0;right:calc(50% - 22px)}
 .legend{padding:10px 16px 0;height:28px;font-size:11px;color:var(--mu);white-space:nowrap;overflow:hidden;font-weight:600}.legend b{color:var(--tx)}
 #grafik{height:310px}
 .bantkat{position:absolute;inset:0;pointer-events:none;z-index:3;overflow:hidden}
-.bant{position:absolute;left:0;border-top:1px solid;border-bottom:1px solid;transition:top .15s,height .15s}
-.bant span{position:absolute;left:6px;top:50%;transform:translateY(-50%);font-size:9.5px;font-weight:800;color:#06121a;padding:1px 6px;border-radius:6px;white-space:nowrap;letter-spacing:.02em}
+.bant{position:absolute;border-top:1px solid;border-bottom:1px solid;border-left:2px solid;border-radius:3px}
+.dok{position:absolute;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:50%;box-shadow:0 0 0 2px var(--bg)}
+.bant span{position:absolute;right:4px;top:50%;transform:translateY(-50%);font-size:9.5px;font-weight:800;color:#06121a;padding:1px 6px;border-radius:6px;white-space:nowrap;letter-spacing:.02em}
 .gsec{display:flex;gap:6px;padding:8px 16px 0;overflow-x:auto;scrollbar-width:none}.gsec::-webkit-scrollbar{display:none}.gsec .chip{padding:6px 10px;font-size:11.5px}
 .ayr{width:1px;background:var(--ln);flex:none;margin:4px 2px}
 .dp{padding:0 16px}
 #perde{position:fixed;inset:0;background:rgba(3,6,14,.55);backdrop-filter:blur(3px);opacity:0;pointer-events:none;transition:opacity .35s;z-index:29}#perde.ac{opacity:1;pointer-events:auto}
 .sheet{position:fixed;left:0;right:0;bottom:0;max-height:90%;overflow-y:auto;background:var(--cardS);border-radius:28px 28px 0 0;border-top:1px solid var(--ln);padding:10px 18px calc(22px + env(safe-area-inset-bottom));transform:translateY(105%);transition:transform .45s cubic-bezier(.2,.9,.2,1);z-index:30}
 .sheet.ac{transform:none}.tutamak{width:42px;height:5px;border-radius:9px;background:var(--ln);margin:0 auto 16px}
-.sheet h2{margin:0 0 4px;font-size:20px;font-weight:800;letter-spacing:-.02em}
+.sheet h2{margin:0 0 4px;font:800 22px/1.15 var(--disp);letter-spacing:-.02em}
 .toast{position:fixed;left:50%;top:16px;transform:translate(-50%,-30px);background:var(--tx);color:var(--bg);font-weight:800;font-size:13px;padding:11px 16px;border-radius:14px;opacity:0;transition:all .35s cubic-bezier(.3,1.4,.5,1);z-index:40;pointer-events:none;box-shadow:0 14px 30px -10px rgba(0,0,0,.5);max-width:90%;text-align:center}
 .toast.ac{opacity:1;transform:translate(-50%,0)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute"><defs>
-<linearGradient id="gLogo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c6cff"/><stop offset="1" stop-color="#22d3ee"/></linearGradient>
-<linearGradient id="gSweep" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity=".55"/></linearGradient>
-<linearGradient id="gGauge" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ff5c7c"/><stop offset=".5" stop-color="#ffb547"/><stop offset="1" stop-color="#2fe0a0"/></linearGradient>
+<linearGradient id="gLogo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f7c55a"/><stop offset="1" stop-color="#e9a21f"/></linearGradient>
+<linearGradient id="gSweep" x1="1" y1="0" x2="0" y2="0"><stop offset="0" stop-color="#f5b83d" stop-opacity="0"/><stop offset="1" stop-color="#f5b83d" stop-opacity=".55"/></linearGradient>
+<linearGradient id="gGauge" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ff6b6b"/><stop offset=".5" stop-color="#f5b83d"/><stop offset="1" stop-color="#3ddc97"/></linearGradient>
 </defs></svg>
-<div class="aurora"><i></i><i></i><i></i></div>
 <div id="app">
   <header class="ust" id="ust"></header>
   <main id="ekran"></main>
@@ -1644,7 +1834,7 @@ nav.alt .rz{top:0;right:calc(50% - 22px)}
     <div class="gsec" id="gsec"></div>
     <div class="dp">
       <div id="dplan"></div>
-      <div class="seg" id="sekmeler" style="margin-top:18px"><button data-s="analiz">Analiz</button><button data-s="hacim">Hacim</button><button data-s="teknik">Teknik</button><button data-s="gecmis">Geçmiş</button></div>
+      <div class="seg" id="sekmeler" style="margin-top:18px"><button data-s="analiz">Analiz</button><button data-s="hacim">Hacim</button><button data-s="teknik">Teknik</button><button data-s="gecmis">Geçmiş</button><button data-s="haber">Haber</button></div>
       <div id="sekme"></div>
       <div class="uyari">VERİ ~15 DK GECİKMELİ · YATIRIM TAVSİYESİ DEĞİLDİR</div>
     </div>
@@ -1686,8 +1876,8 @@ const sureYaz=(k,m)=>m==='w'?`${k} gün`:m==='g'?`${k} mum ≈ ${tl(k/4,0)} saat
 const ne=(s,m)=>s.once===0?(m==='w'?'bugün':'son mum'):s.once+' '+birim(m)+' önce';
 let tz_;function toast(x){const t=$('#toast');t.textContent=x;t.classList.add('ac');clearTimeout(tz_);tz_=setTimeout(()=>t.classList.remove('ac'),2400)}
 /* logo ve ikonlar */
-const LOGO=`<svg viewBox="0 0 40 40"><rect width="40" height="40" rx="12" fill="url(#gLogo)"/><circle cx="20" cy="21" r="12" fill="none" stroke="rgba(255,255,255,.28)" stroke-width="1.4"/><circle cx="20" cy="21" r="6.5" fill="none" stroke="rgba(255,255,255,.38)" stroke-width="1.4"/>
- <g class="sweep"><path d="M20 21L20 9A12 12 0 0 1 30.4 15Z" fill="url(#gSweep)"/></g><path d="M8.5 27l6.5-6.5 4 3 9.5-10" fill="none" stroke="#fff" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="28.5" cy="13.5" r="2.7" fill="#fff"/></svg>`;
+const LOGO=`<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#0b1422" stroke="#f5b83d" stroke-width="1.6"/><circle cx="20" cy="20" r="12" fill="none" stroke="rgba(245,184,61,.35)" stroke-width="1"/><circle cx="20" cy="20" r="5.5" fill="none" stroke="rgba(245,184,61,.35)" stroke-width="1"/>
+ <g class="sweep"><path d="M20 20L20 2A18 18 0 0 1 35.6 11Z" fill="url(#gSweep)"/><line x1="20" y1="20" x2="20" y2="2" stroke="#f5b83d" stroke-width="1.6" stroke-linecap="round"/></g><circle cx="27.5" cy="13" r="2.4" fill="#3ddc97"/><circle cx="14" cy="26" r="1.8" fill="#ff6b6b"/><circle cx="20" cy="20" r="1.8" fill="#f5b83d"/></svg>`;
 const BOTIK=`<span class="botik"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="8" width="16" height="12" rx="4"/><path d="M12 8V4.5"/><circle cx="12" cy="3.5" r="1.3" fill="currentColor"/><g class="goz" style="transform-origin:12px 14px"><circle cx="9" cy="14" r="1.4" fill="currentColor"/><circle cx="15" cy="14" r="1.4" fill="currentColor"/></g></svg></span>`;
 const IK={
  hedef:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/></svg>',
@@ -1714,7 +1904,7 @@ function spark(d,w=64,h=26,r){if(!d||d.length<2)return'';const c=r||(d[d.length-
   return `<svg class="spk" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><path d="${yol(d,w,h,3)}" style="fill:none;stroke:${c};stroke-width:1.8" stroke-linecap="round"/></svg>`}
 function halka(g,al){return `<div class="halka"><svg viewBox="0 0 44 44"><circle class="hz" cx="22" cy="22" r="18"/><circle class="hd" cx="22" cy="22" r="18" pathLength="100" style="--v:${g};stroke:${al?'var(--up)':'var(--dn)'}"/></svg><b>${g}</b></div>`}
 const kap=o=>o.m.slice(-40).map(m=>m[4]);
-function isi(d){const a=Math.min(Math.abs(d||0)/4,1)*.55+.1;return d>=0?`rgba(47,224,160,${a})`:`rgba(255,92,124,${a})`}
+function isi(d){const a=Math.min(Math.abs(d||0)/4,1)*.55+.1;return d>=0?`rgba(61,220,151,${a})`:`rgba(255,107,107,${a})`}
 /* Streamlit sayfasına komut gönder: adres satırına ?bot=... yazar, sunucu işler */
 function ustCalis(kod){try{const d=window.parent.document,s=d.createElement('script');s.textContent=kod;d.body.appendChild(s);return true}catch(e){return false}}
 function ustGit(qs){toast('Gönderiliyor…');D.set('ekran','bot');if(!ustCalis('window.location.search='+JSON.stringify(qs))){try{window.top.location.search=qs}catch(e){toast('Tarayıcı izin vermedi')}}}
@@ -1728,16 +1918,41 @@ function hazirla(){MODLAR.forEach(modHazirla);
   aktifler=liste_.filter(h=>h[M].akt).sort((a,b)=>(KS[a[M].akt.kalite]-KS[b[M].akt.kalite])||(b[M].akt.guven-a[M].akt.guven)||(a[M].akt.once-b[M].akt.once));
   $('#rz').hidden=!aktifler.length;$('#rz').textContent=aktifler.length}
 function yeniAkis(){const g=new Set(D.get('gorulen',[]));return V.akis.filter(o=>!g.has(o.id)).length}
-function gorus(h,m){const o=h[m],s=o.akt;
-  if(s){let x=s.yon>0?`${GOSTER[m]} grafiğe göre · vade ${s.vade} (${s.vade_sure}). Giriş ${tl(s.giris_alt)}–${tl(s.giris_ust)}, ilk kâr al ${tl(s.hedef)} (+%${tl(s.pot[0])}), stop ${tl(s.stop)} (−%${tl(s.risk)}).`:`${GOSTER[m]} grafiğe göre zayıflama · elinde varsa çık ya da azalt. Beklenen geri çekilme ${tl(s.hedef)} (−%${tl(s.pot[0])}); ${tl(s.stop)} üstü kapanış sinyali bozar.`;
-    if(s.guclu)x+=s.yon>0?' Hacimli bölgede alıcılar aktif; bot bu sinyalde ısrarcı.':' Hacimli bölgede satıcılar baskın.';return{tur:s.tur,metin:x}}
-  const p=[];if(o.tetik.ust)p.push(`${tl(o.tetik.ust)} üstünde hacimli kapanış AL tetikler`);if(o.tetik.alt)p.push(`${tl(o.tetik.alt)} altı SAT/çıkış`);
-  return{tur:'BEKLE',metin:'Açık plan yok. '+(p.length?p.join('; ')+'.':'')}}
-
+function gorus(h,m){const o=h[m],s=o.akt;let th=0;for(const c of h.s)th+=c.charCodeAt(0);th+=new Date().getDate();
+  const sec=a=>a[th%a.length],kucuk=x=>x?x.charAt(0).toLocaleLowerCase('tr-TR')+x.slice(1):'',temiz=x=>!/^Karne|^Öğrenen/.test(x);
+  if(s){const al=s.yon>0,olay=s.sebepler[0],ek=s.sebepler.slice(1,2);
+    const ger=s.arti.filter(temiz).slice(0,3),risk=s.eksi.filter(temiz)[0];
+    const ga=Math.min(s.giris_alt,s.giris_ust),gu=Math.max(s.giris_alt,s.giris_ust);
+    const p1=sec([`${olay}${ek.length?', ayrıca '+kucuk(ek[0]):''}.`,`${GOSTER[m]} grafikte ${kucuk(olay)}${ek.length?' ve '+kucuk(ek[0]):''}.`]);
+    const p2=ger.length?sec(['Lehine olanlar: ','Sinyali destekleyen: ','Arkasında: '])+ger.map(kucuk).join(', ')+'.':'';
+    const gecti=al?o.p>=s.hedef:o.p<=s.hedef;
+    if(gecti){const tam=[p1,`Fiyat ${tl(o.p)} ile ilk hedefin (${tl(s.hedef)}) ${al?'üstüne çıktı':'altına indi'}; sinyalin büyük kısmı gerçekleşti, buradan yeni ${al?'alım':'satış'} için geç.`,
+      al?`Elinde varsa stopu ${tl(Math.max(s.giris_alt,s.stop))} üstüne çekip ikinci hedef ${tl(s.hedef2)} için taşıyabilirsin.`:'',p2].filter(Boolean).join(' ');return{tur:s.tur,metin:tam}}
+    const p3=s.durum.kod==='bolgede'?`Fiyat ${tl(o.p)} ile giriş aralığında (${tl(ga)}–${tl(gu)}).`
+      :s.durum.kod==='kacti'?sec([`Fiyat ${tl(o.p)} ile giriş aralığını geçti; kovalamak yerine ${tl(gu)} civarına geri çekilme beklemek daha sağlıklı.`,`Giriş aralığı (${tl(ga)}–${tl(gu)}) kaçtı, fiyat ${tl(o.p)}; geri çekilme gelmezse bu fırsatı pas geçmek de bir seçenek.`])
+      :`Fiyat ${tl(o.p)} ile ${al?'stopa':'geçersizlik seviyesine'} yaklaşıyor; ${tl(s.stop)} ${al?'altında':'üstünde'} kapanış senaryoyu bozar.`;
+    const p4=al?sec([`İlk hedef ${tl(s.hedef)} (+%${tl(s.pot[0],1)}), zarar kes ${tl(s.stop)} (−%${tl(s.risk,1)}); olası kazanç riskin ${tl(s.rk,1)} katı.`,
+                     `Plan: ${tl(s.hedef)}'de (+%${tl(s.pot[0],1)}) yarısını sat, ${tl(s.stop)} altında (−%${tl(s.risk,1)}) çık. Vade ${s.vade.toLocaleLowerCase('tr-TR')}, ${s.vade_sure}.`])
+      :`Elinde varsa çık ya da azalt. ${tl(s.hedef)} civarına (−%${tl(s.pot[0],1)}) geri çekilme beklenir; ${tl(s.stop)} üstünde kapanış bu görüşü bozar.`;
+    const p5=risk?`Dikkat: ${kucuk(risk)}.`:'';
+    const p6=s.olasilik!=null?`Geçmişte benzer kurulumların %${tl(s.olasilik,0)} kadarı hedefe ulaştı.`:'';
+    const p7=s.guclu?(al?' Hacimli bölgede alıcılar gerçekten iş başında.':' Hacimli bölgede satıcılar baskın.'):'';
+    return{tur:s.tur,metin:[p1+p7,p2,p3,p4,p5,p6].filter(Boolean).join(' ')}}
+  const Rz=o.sev.filter(x=>x[1]==='R').sort((a,b)=>a[6]-b[6])[0],Dz=o.sev.filter(x=>x[1]==='D').sort((a,b)=>b[7]-a[7])[0],Iz=o.sev.find(x=>x[1]==='I');
+  const bz=z=>`${tl(z[6])}–${tl(z[7])}`;let t;
+  if(Iz)t=`Fiyat ${bz(Iz)} bölgesinin içinde; bu bölge ${Iz[3]} kez tepki gördü. Bölgenin üstünde hacimli kapanış AL, altında kapanış çıkış sinyali olur.`;
+  else if(Rz&&Dz){const uR=(Rz[6]/o.p-1)*100,uD=(o.p/Dz[7]-1)*100;
+    if(uR<uD*0.5)t=sec([`Fiyat ${bz(Rz)} direncine %${tl(uR,1)} yaklaştı; bu bölge ${Rz[10]||Rz[3]} kez satış gördü. Hacimli kırılım gelmeden almak için erken.`,`Üstte ${bz(Rz)} direnci var (%${tl(uR,1)} yukarıda, ${Rz[3]} tepki). Burayı hacimle aşarsa AL sinyali gelir, aşamazsa geri çekilme olası.`]);
+    else if(uD<uR*0.5)t=sec([`Fiyat ${bz(Dz)} desteğine %${tl(uD,1)} mesafede; burada ${Dz[11]||Dz[3]} kez alıcı çıktı. Dönüş mumu gelirse tepki alımı düşünülebilir.`,`Altta ${bz(Dz)} desteği yakın (%${tl(uD,1)}). Bu bölgeden ${Dz[3]} kez dönüş olmuş; kırılırsa satış hızlanabilir.`]);
+    else t=`Fiyat iki bölge arasında: altta ${bz(Dz)} desteği (%${tl(uD,1)} aşağıda), üstte ${bz(Rz)} direnci (%${tl(uR,1)} yukarıda). Ortada net bir avantaj yok; kenarlardan birine gelince değerlendirmek daha iyi.`}
+  else if(Dz)t=`Fiyat görünen tüm dirençlerin üstünde, yukarıda referans yok. En yakın destek ${bz(Dz)}; trend sürdükçe taşımak, bu bölgenin altına inişte çıkmak mantıklı.`;
+  else if(Rz)t=`Fiyat görünen tüm desteklerin altında; en yakın direnç ${bz(Rz)}. Dip arayışında acele etme, önce bir dönüş yapısı oluşmalı.`;
+  else t='Yakında tepki görmüş bir destek ya da direnç bölgesi yok; net sinyal için fiyatın bir yapı oluşturmasını bekle.';
+  return{tur:'BEKLE',metin:t}}
 /* üst bölüm */
 let indX=null;
 function ustCiz(){const vd=V.vade[M],gizle=['bot','portfoy','akis'].includes(ekran),yeni=yeniAkis();
-  $('#ust').innerHTML=`<div class="ust1"><div class="logo">${LOGO}<div><b>Borsa <span>Radar</span></b><small>BIST · SİNYAL BOTU</small></div></div>
+  $('#ust').innerHTML=`<div class="ust1"><div class="logo">${LOGO}<div><b>Borsa <span>Radar</span></b><small>Borsa İstanbul sinyal botu</small></div></div>
    <span class="canli"><i class="nokta ${V.seans?'on':''}"></i>${V.guncelleme}</span>
    <button class="ikon" data-git="akis" title="Canlı akış">${IK.zil}${yeni?`<b class="rz">${yeni>99?'99+':yeni}</b>`:''}</button>
    <button class="ikon" data-git="profil" title="Ayarlar">${IK.ayar}</button></div>
@@ -1789,40 +2004,61 @@ function karPlani(h,m){const s=h[m].akt,al=s.yon>0,L=lotHesap(s),kapanis={'1':'1
    (m==='1'?`<div class="drm dikkat"><i></i>1 dk sinyalleri ~15 dk gecikmeli veriye dayanır; fiyatı Midas'tan mutlaka kontrol et.</div>`:'')}
 function satirH(h,alt,m=M){const o=h[m];return `<div data-h="${h.s}" data-m="${m}">${av(h.s)}<div class="ad"><b>${h.s}${o.akt?` <span class="yon ${o.akt.yon>0?'al':'sat'}">${o.akt.tur}</span> <span class="kal ${kalCls(o.akt.kalite)}">${o.akt.kalite}</span>`:''}</b><small>${alt||h.sek}</small></div>
   ${spark(kap(o))}<div class="sag"><b class="n">${tl(o.p)}</b><small class="${yon(o.d)}">${yz(o.d)}</small></div></div>`}
-function akisSatir(e,gorulen){const R={AL:['var(--ups)','var(--up)','▲'],SAT:['var(--dns)','var(--dn)','▼'],'HACİM':['var(--was)','var(--wa)','⚡'],'DÜŞÜŞ':['var(--dns)','var(--dn)','↘'],'YÜKSELİŞ':['var(--ups)','var(--up)','↗']}[e.tip]||['var(--card2)','var(--mu)','•'];
+function zamanFark(t){const d=(Date.now()/1000-t)/60;return d<60?Math.max(1,Math.round(d))+' dk önce':d<1440?Math.round(d/60)+' sa önce':Math.round(d/1440)+' gün önce'}
+function haberSatir(e){const p=e.p||0,r=p>0?'var(--up)':p<0?'var(--dn)':'var(--mu2)';
+  return `<a class="hb" href="${esc(e.u||'#')}" target="_blank" rel="noopener"><span class="hp" style="background:${r}"></span><div style="min-width:0"><p>${e.s?`<b style="font-family:var(--disp)">${e.s}</b> `:''}${esc(e.metin||e.b)}</p>
+   <small>${p>0?'Olumlu':p<0?'Olumsuz':'Nötr'}${e.k||e.alt?' · '+esc(e.k||String(e.alt).replace(/^Olu\w+ haber · ?/,'')):''} · ${zamanFark(e.t-(e.tip==='HABER'?10800:0))}</small></div></a>`}
+function akisSatir(e,gorulen){if(e.tip==='HABER')return haberSatir(e);const R={AL:['var(--ups)','var(--up)','▲'],SAT:['var(--dns)','var(--dn)','▼'],'HACİM':['var(--was)','var(--wa)','⚡'],'DÜŞÜŞ':['var(--dns)','var(--dn)','↘'],'YÜKSELİŞ':['var(--ups)','var(--up)','↗']}[e.tip]||['var(--card2)','var(--mu)','•'];
   const tipEt=e.tip==='AL'||e.tip==='SAT'?`<span class="yon ${e.tip==='AL'?'al':'sat'}">${e.tip}</span>${e.kalite?`<span class="kal ${kalCls(e.kalite)}">${e.kalite}</span>`:''}`:`<span class="rozet ${e.tip==='HACİM'?'wa':e.tip==='DÜŞÜŞ'?'dn':'up'}" style="padding:2px 8px;font-size:10.5px">${e.tip}</span>`;
   return `<div data-h="${e.s}" data-m="${e.mod}"><span class="ai" style="background:${R[0]};color:${R[1]}">${R[2]}</span>
    <div class="ic"><div class="bas"><b>${e.s}</b>${tipEt}<span class="dl">${GOSTER[e.mod]}</span></div><p>${esc(e.metin)}</p><small>${tl(e.fiyat)} · ${esc(e.alt||'')}</small></div>
    <span class="zaman">${saatYaz(e.t,e.mod)}</span>${gorulen&&!gorulen.has(e.id)?'<span class="yeni">YENİ</span>':''}</div>`}
 
+/* RADAR: aktif sinyaller; merkeze yakın = güçlü, tarama geçince yanıp söner */
+function radar(){const T=6,l=aktifler.slice(0,24),nal=l.filter(h=>h[M].akt.yon>0).length;
+  const etiket=new Set(l.slice(0,6).map(h=>h.s));
+  const nok=l.map(h=>{const s=h[M].akt;let a=7;for(const c of h.s)a=(a*31+c.charCodeAt(0))%360;
+    const r=Math.min(44,6+(100-s.guven)*0.85),x=50+r*Math.sin(a*Math.PI/180),y=50-r*Math.cos(a*Math.PI/180),renk=s.yon>0?'var(--up)':'var(--dn)';
+    return `<span class="nok${KS[s.kalite]<=1?' b':''}${x>62?' sol':''}" data-h="${h.s}" data-m="${M}" style="left:${x}%;top:${y}%;--c:${renk};--d:${(a/360*T).toFixed(2)}s">${etiket.has(h.s)?`<i>${h.s}</i>`:''}</span>`}).join('');
+  return `<div class="kart radarkart"><div class="sat1"><h3 style="margin:0;font:700 17px var(--disp)">Sinyal radarı</h3><span class="lbl">${GOSTER[M]} grafik</span></div>
+   <div class="radar"><svg class="iz" viewBox="0 0 100 100"><g fill="none" style="stroke:var(--ln)" stroke-width=".35">
+     <circle cx="50" cy="50" r="46"/><circle cx="50" cy="50" r="31"/><circle cx="50" cy="50" r="16"/><path d="M50 4V96M4 50H96"/></g>
+     <circle cx="50" cy="50" r="46" fill="none" style="stroke:rgba(245,184,61,.45)" stroke-width=".5"/></svg>
+    <div class="tarama"></div>${nok}<span class="merkez"></span></div>
+   <div class="radar-alt"><div><b>${say(l.length)}</b><small>taze sinyal${aktifler.length>l.length?' (en güçlü 24 gösteriliyor)':''}</small></div>
+    <div class="sag2"><span class="up">● ${nal} al</span><br><span class="dn">● ${l.length-nal} sat</span></div></div>
+   <p class="not" style="margin:8px 0 0">Merkeze yakın nokta daha yüksek güven demek. Büyük noktalar A+ ve A kalite. Bir noktaya dokunursan hissenin grafiği açılır.</p></div>`}
 /* PANEL */
 function botMini(){const kz=B.kz||0,eg=(B.egri||[]).map(x=>x[1]);
   return `<div class="kart pad botmini" data-git="bot"><div class="sat1"><div class="botbas">${BOTIK}<div><b>Canlı Bot</b><small>${!B.aktif?'Duraklatıldı':V.seans?'Seansta işlem yapıyor':'Seans kapalı · bekliyor'} · bugün ${B.bugun.islem}/${B.ayar.gunluk}</small></div></div>
-   <div style="text-align:right"><b class="n" style="font-size:16px;font-weight:800;display:block">${tl(B.ozk,0)} ₺</b><span class="rozet ${yon(kz)}" style="margin-top:3px">${yz(B.kz_yuzde)}</span></div></div>
+   <div style="text-align:right"><b class="n" style="font:800 18px var(--disp);display:block;white-space:nowrap">${tl(B.ozk,0)} ₺</b><span class="rozet ${yon(kz)}" style="margin-top:3px">${yz(B.kz_yuzde)}</span></div></div>
    ${eg.length>2?`<div style="margin:10px -16px -16px">${alan(eg,{h:56})}</div>`:''}</div>`}
 function ekranPanel(){const b=V.bist,yuk=liste_.filter(h=>h[M].d>0).length,dus=liste_.filter(h=>h[M].d<0).length,top=yuk+dus||1,BT=V.bot[M]||{};
   const ap=aktifler.filter(h=>KS[h[M].akt.kalite]<=1).length;
-  let x=`<div class="kart hero"><div class="sat1" style="align-items:flex-start"><div><span class="lbl">BIST 100 endeksi</span><div class="buyuk n">${b?say(b.p,0):'—'}</div>
-      ${b?`<div class="satir" style="margin-top:6px"><span class="rozet ${yon(b.d)}">${b.d>=0?'▲':'▼'} ${yz(b.d)}</span><span class="rozet ${b.rejim==='Boğa'?'up':b.rejim==='Ayı'?'dn':''}">${b.rejim==='Boğa'?'🐂':b.rejim==='Ayı'?'🐻':'↔'} ${b.rejim} piyasası</span></div>`:''}</div></div>
-    ${b?alan(M==='w'?b.spark_w:b.spark):''}
-    <div class="genislik"><i style="flex:${yuk};background:var(--up)"></i><i style="flex:${dus};background:var(--dn);transform-origin:right"></i></div>
-    <div class="gy"><span><b class="up">${yuk}</b> yükselen</span><span>piyasa genişliği</span><span><b class="dn">${dus}</b> düşen</span></div></div>`;
+  let x=radar();
+  x+=`<div class="kart bistsat" data-git="piyasa" style="cursor:pointer"><div style="flex:1;min-width:0"><span class="lbl">BIST 100</span><div style="font:800 26px/1.1 var(--disp)">${b?say(b.p,0):'—'}</div>
+      ${b?`<div class="satir" style="margin-top:6px"><span class="rozet ${yon(b.d)}">${yz(b.d)}</span><span class="rozet ${b.rejim==='Boğa'?'up':b.rejim==='Ayı'?'dn':''}">${b.rejim}</span></div>`:''}
+      <div class="genislik" style="margin-top:10px"><i style="flex:${yuk};background:var(--up)"></i><i style="flex:${dus};background:var(--dn);transform-origin:right"></i></div>
+      <div class="mu" style="font-size:11.5px;font-weight:600;margin-top:5px">${yuk} hisse yükseliyor, ${dus} düşüyor</div></div>
+    ${b?alan(M==='w'?b.spark_w:b.spark,{h:48}):''}</div>`;
   x+=botMini();
   x+=`<div class="kpi"><div class="tile" data-git="plan"><span class="ik" style="background:var(--acs);color:var(--acT)">${IK.hedef}</span><div><b>${say(aktifler.length)}</b><small>Taze plan</small></div></div>
     <div class="tile" data-git="plan"><span class="ik" style="background:var(--was);color:var(--wa)">${IK.yildiz}</span><div><b>${say(ap)}</b><small>A+ / A kalite</small></div></div>
     <div class="tile" data-git="bot"><span class="ik" style="background:var(--ups);color:var(--up)">${IK.kupa}</span><div><b>${BT.n?say(BT.kazanma,0,'%'):'—'}</b><small>Test kazanma</small></div></div>
     <div class="tile" data-git="bot"><span class="ik" style="background:${(BT.getiri||0)>=0?'var(--ups)':'var(--dns)'};color:${(BT.getiri||0)>=0?'var(--up)':'var(--dn)'}">${IK.grafik}</span><div><b class="${yon(BT.getiri||0)}">${BT.n?yz(BT.getiri,1):'—'}</b><small>Test getirisi</small></div></div></div>`;
   const en=aktifler.slice(0,10);
-  x+=`<div class="bolum"><h3>En iyi kurulumlar</h3><a data-git="plan">Tümü →</a></div>`;
+  x+=`<div class="bolum"><h3>En iyi kurulumlar</h3><a data-git="plan">Tümünü gör</a></div>`;
   x+=en.length?`<div class="yatay">${en.map(h=>{const s=h[M].akt,al=s.yon>0;return `<div class="kart skart ${al?'':'sat'}" data-h="${h.s}" data-m="${M}">
       <div class="sat1"><div class="satir" style="gap:10px;flex-wrap:nowrap">${av(h.s,38)}<div><b style="font-size:15px;font-weight:800">${h.s}</b><div style="margin-top:2px"><span class="yon ${al?'al':'sat'}">${s.tur}</span> <span class="kal ${kalCls(s.kalite)}">${s.kalite}</span></div></div></div>${halka(s.guven,al)}</div>
       <div class="neden">${esc(s.sebepler[0])}</div>
       <div class="uc"><div><small>Giriş</small><b>${tl(s.giris_ust)}</b></div><div><small>H1</small><b class="up">+${tl(s.pot[0],1)}%</b></div><div><small>Stop</small><b class="dn">−${tl(s.risk,1)}%</b></div></div></div>`}).join('')}</div>`
     :`<div class="bos"><b>Bu dilimde taze plan yok</b>Diğer zaman dilimlerine bak ya da güven eşiğini düşür.</div>`;
-  const g=new Set(D.get('gorulen',[]));const ak=V.akis.filter(e=>!(e.tip==='AL'||e.tip==='SAT')||e.guven>=ayar.guven).slice(0,5);
-  x+=`<div class="bolum"><h3>Canlı akış</h3><a data-git="akis">Tümü →</a></div>`+(ak.length?`<div class="kart akis">${ak.map(e=>akisSatir(e,g)).join('')}</div>`:`<div class="bos">Henüz olay yok</div>`);
+  const hbl=V.akis.filter(e=>e.tip==='HABER').slice(0,4);
+  if(hbl.length)x+=`<div class="bolum"><h3>Önemli haberler</h3><a data-git="akis" data-afh="1">Tümü</a></div><div class="kart">${hbl.map(haberSatir).join('')}</div>`;
+  const g=new Set(D.get('gorulen',[]));const ak=V.akis.filter(e=>e.tip!=='HABER'&&(!(e.tip==='AL'||e.tip==='SAT')||e.guven>=ayar.guven)).slice(0,5);
+  x+=`<div class="bolum"><h3>Canlı akış</h3><a data-git="akis">Tümü</a></div>`+(ak.length?`<div class="kart akis">${ak.map(e=>akisSatir(e,g)).join('')}</div>`:`<div class="bos">Henüz olay yok</div>`);
   if(V.sektorler.length){const s=V.sektorler.filter(k=>k.ad!=='Diğer');
-    x+=`<div class="bolum"><h3>Sektör para akışı</h3><a data-git="sektor">Detay →</a></div><div class="kart pad">${s.slice(0,6).map(k=>`<div style="padding:6px 0;cursor:pointer" data-sek="${esc(k.ad)}"><div class="sat1" style="font-size:13px;font-weight:700"><span>${esc(k.ad)}</span><span class="${yon(k.akis)}" style="font-weight:800">${k.akis>=0?'+':'−'}${tl(Math.abs(k.akis*100),0)}%</span></div>
+    x+=`<div class="bolum"><h3>Sektör para akışı</h3><a data-git="sektor">Detay</a></div><div class="kart pad">${s.slice(0,6).map(k=>`<div style="padding:6px 0;cursor:pointer" data-sek="${esc(k.ad)}"><div class="sat1" style="font-size:13px;font-weight:700"><span>${esc(k.ad)}</span><span class="${yon(k.akis)}" style="font-weight:800">${k.akis>=0?'+':'−'}${tl(Math.abs(k.akis*100),0)}%</span></div>
       <div class="akisbar"><i class="${k.akis>=0?'':'sol'}" style="${k.akis>=0?`left:50%;width:${Math.min(Math.abs(k.akis),1)*50}%;background:var(--up)`:`right:50%;width:${Math.min(Math.abs(k.akis),1)*50}%;background:var(--dn)`}"></i></div></div>`).join('')}</div>`}
   const ls=[...liste_].sort((a,b)=>(b.lik||0)-(a.lik||0)).slice(0,30);
   x+=`<div class="bolum"><h3>Isı haritası</h3><span class="lbl">en likit 30</span></div><div class="harita">${ls.map((h,i)=>`<div data-h="${h.s}" data-m="${M}" style="background:${isi(h[M].d)};animation-delay:${i*15}ms"><b>${h.s}</b><span>${yz(h[M].d,1)}</span></div>`).join('')}</div>`;
@@ -1831,11 +2067,11 @@ function ekranPanel(){const b=V.bist,yuk=liste_.filter(h=>h[M].d>0).length,dus=l
 /* AKIŞ */
 let af=D.get('af','tumu'),adl=D.get('adl','tumu');
 function ekranAkis(){const g=new Set(D.get('gorulen',[]));
-  let l=V.akis.filter(e=>(adl==='tumu'||e.mod===adl)&&(af==='tumu'||(af==='sinyal'&&(e.tip==='AL'||e.tip==='SAT'))||(af==='hacim'&&e.tip==='HACİM')||(af==='hareket'&&(e.tip==='DÜŞÜŞ'||e.tip==='YÜKSELİŞ'))));
+  let l=V.akis.filter(e=>(adl==='tumu'||e.mod===adl)&&(af==='tumu'||(af==='sinyal'&&(e.tip==='AL'||e.tip==='SAT'))||(af==='hacim'&&e.tip==='HACİM')||(af==='hareket'&&(e.tip==='DÜŞÜŞ'||e.tip==='YÜKSELİŞ'))||(af==='haber'&&e.tip==='HABER')));
   l=l.filter(e=>!(e.tip==='AL'||e.tip==='SAT')||e.guven>=ayar.guven);
   const c=(k,a,v,x)=>`<button class="chip${v===k?' on':''}" data-${x}="${k}">${a}</button>`;
   const x=`<div class="bolum" style="margin-top:8px"><h3>Canlı akış</h3><span class="lbl">${l.length} olay</span></div>
-   <div class="chips">${c('tumu','Tümü',af,'af')}${c('sinyal','Sinyaller',af,'af')}${c('hacim','⚡ Hacim patlaması',af,'af')}${c('hareket','Sert hareket',af,'af')}</div>
+   <div class="chips">${c('tumu','Tümü',af,'af')}${c('sinyal','Sinyaller',af,'af')}${c('hacim','⚡ Hacim patlaması',af,'af')}${c('hareket','Sert hareket',af,'af')}${c('haber','Haberler',af,'af')}</div>
    <div class="chips">${c('tumu','Tüm dilimler',adl,'adl')}${MODLAR.map(m=>c(m,GOSTER[m],adl,'adl')).join('')}</div>`+
    (l.length?`<div class="kart akis">${l.map(e=>akisSatir(e,g)).join('')}</div>`:`<div class="bos">Bu filtrede olay yok</div>`);
   setTimeout(()=>{V.akis.forEach(e=>g.add(e.id));D.set('gorulen',[...g].slice(-1500))},2500);
@@ -1885,6 +2121,7 @@ function ekranBot(){const a=B.ayar,kz=B.kz||0;
     <div class="buyuk n">${say(B.ozk,0,'','')} <span style="font-size:22px;color:var(--mu)">₺</span></div>
     <div class="satir" style="margin-top:6px"><span class="rozet ${yon(kz)}">${kz>=0?'▲':'▼'} ${tlk(kz)} · ${yz(B.kz_yuzde)}</span>${B.bist!=null?`<span class="rozet">BIST100 aynı dönem ${yz(B.bist)}</span>`:''}</div></div>
    <div id="botGrafik"></div>
+   ${botDurum()}
    <div class="botalt"><div><small>Bugün</small><b>${B.bugun.islem}<span class="mu" style="font-size:12px">/${a.gunluk}</span></b><small>işlem</small></div><div><small>Açık</small><b>${B.poz.length}<span class="mu" style="font-size:12px">/${a.acik}</span></b><small>pozisyon</small></div><div><small>Nakit</small><b>${tl(B.nakit,0)}</b><small>₺</small></div></div>
    <div class="dugmeler"><button class="btn" data-bot="${B.aktif?'durdur':'baslat'}">${B.aktif?IK.dur+' Duraklat':IK.bas+' Başlat'}</button><button class="btn ana" data-botayar="1">${IK.ayar} Bot ayarları</button></div></div>`;
   x+=kayitSerit();
@@ -1908,6 +2145,12 @@ GITHUB_REPO = "kullanici-adin/didactic-barnacle"</span></li>
    <p class="not">Token sadece bu depoya ve sadece dosya yazma iznine sahip olur. Bot verisi her işlemde ve seans boyunca 10 dakikada bir kaydedilir. Şu anki geçmiş, kurulumdan sonra ilk kayıtta GitHub'a taşınır (uygulama araya yeniden başlamazsa).</p>
    <div class="dugmeler" style="padding:8px 0 0"><button class="btn" id="kb_kapat">Tamam</button></div>`;
   sheetAc();$('#kb_kapat').onclick=sheetKapat}
+function botDurum(){const a=B.ayar,d=B.durum||{},c=[];
+  const gd=d.gun_degisim;
+  if(a.gunluk_zarar>0)c.push(d.zarar_kilit?`<span class="rozet dn">Zarar limiti doldu, bugün yeni işlem yok</span>`:`<span class="rozet ${gd!=null&&gd<0?'wa':''}">Bugün ${gd==null?'—':yz(gd,1)} · limit −%${tl(a.gunluk_zarar,1)}</span>`);
+  else c.push(`<span class="rozet">Günlük zarar limiti kapalı</span>`);
+  if(a.piyasa_filtre)c.push(d.piyasa_kilit?`<span class="rozet dn">Piyasa düşüyor (${yz(d.bist_d,1)}), AL beklemede</span>`:`<span class="rozet up">Piyasa filtresi açık</span>`);
+  return `<div class="durumlar">${c.join('')}</div>`}
 function botOzet(){const s=B.st||{},az=s.n<5;
   const sk=s.skor??0,renk=sk>=60?'up':sk>=45?'wa':'dn';
   const bil=[['Kazanma oranı',s.kazanma,s.kazanma==null?'—':'%'+tl(s.kazanma,0)],['Kâr faktörü',s.pf==null?null:Math.min(s.pf/2,1)*100,s.pf==null?'—':tl(s.pf,2)],
@@ -1951,16 +2194,16 @@ function botGun(){const g=B.gunler||[];if(!g.length)return `<div class="bos"><b>
     <div class="gunbar" style="--sifir:${sifir}px;height:${h+10}px">${son.map((x,i)=>{const b=Math.abs(x.kz)/aralik*h;return `<div title="${x.g}"><i style="height:${Math.max(b,2)}px;top:${x.kz>=0?sifir-b:sifir}px;background:${x.kz>=0?'var(--up)':'var(--dn)'};transform-origin:${x.kz>=0?'bottom':'top'};animation-delay:${i*40}ms"></i></div>`}).join('')}</div>
     <div class="satir" style="justify-content:space-between;margin-top:10px"><span class="rozet up">Kârlı gün %${s.karli_gun??'—'}</span><span class="rozet">Günlük oynaklık ${s.std==null?'—':'%'+tl(s.std,2)}</span></div></div>
    <div class="kart" style="margin-top:12px"><table class="tbl"><tr><th>Gün</th><th>İşlem</th><th>K/Z</th><th>Getiri</th></tr>${[...g].reverse().map(x=>`<tr><td>${x.g}</td><td>${x.islem}</td><td class="${yon(x.kz)}">${tlk(x.kz)}</td><td class="${yon(x.ret)}">${yz(x.ret)}</td></tr>`).join('')}</table></div>`}
-function botLog(){const R={al:['var(--acs)','var(--acT)','＋'],kar:['var(--ups)','var(--up)','◐'],kazanc:['var(--ups)','var(--up)','✓'],zarar:['var(--dns)','var(--dn)','✕'],bilgi:['var(--card2)','var(--mu)','i']};
+function botLog(){const R={zarar:['var(--dns)','var(--dn)','⛔'],al:['var(--acs)','var(--acT)','＋'],kar:['var(--ups)','var(--up)','◐'],kazanc:['var(--ups)','var(--up)','✓'],zarar:['var(--dns)','var(--dn)','✕'],bilgi:['var(--card2)','var(--mu)','i']};
   return B.log.length?`<div class="kart log">${B.log.map(l=>{const r=R[l[1]]||R.bilgi;return `<div ${l[3]?`data-h="${l[3]}" style="cursor:pointer"`:''}><span class="li" style="background:${r[0]};color:${r[1]}">${r[2]}</span><div><p>${l[3]?`<b>${l[3]}</b> · `:''}${esc(l[2])}</p><small>${l[0]}</small></div></div>`}).join('')}</div>`:`<div class="bos">Kayıt yok</div>`}
 function botGrafikKur(){if(botChart){botChart.remove();botChart=null}const el=$('#botGrafik');if(!el)return;
   const eg=(B.egri||[]).filter((x,i,a)=>!i||x[0]>a[i-1][0]);
   if(eg.length<2||!window.LightweightCharts){el.innerHTML=`<div style="height:100%;display:grid;place-items:center;color:var(--mu);font-size:12.5px;font-weight:700">Grafik bot işlem yaptıkça çizilecek</div>`;return}
-  const css=getComputedStyle(document.documentElement),cv=k=>css.getPropertyValue(k).trim(),up=(B.ozk>=B.ayar.butce),c=up?'#2fe0a0':'#ff5c7c';
+  const css=getComputedStyle(document.documentElement),cv=k=>css.getPropertyValue(k).trim(),up=(B.ozk>=B.ayar.butce),c=up?'#3ddc97':'#ff6b6b';
   botChart=LightweightCharts.createChart(el,{width:el.clientWidth,height:170,layout:{background:{type:'solid',color:'transparent'},textColor:cv('--mu'),fontFamily:'Manrope',fontSize:10},
     grid:{vertLines:{visible:false},horzLines:{color:cv('--ln2')}},rightPriceScale:{borderVisible:false,scaleMargins:{top:.15,bottom:.08}},timeScale:{borderVisible:false,timeVisible:true,secondsVisible:false},
-    crosshair:{mode:0,vertLine:{color:cv('--mu2'),labelBackgroundColor:'#7c6cff'},horzLine:{color:cv('--mu2'),labelBackgroundColor:'#7c6cff'}},handleScroll:false,handleScale:false,localization:{locale:'tr-TR',priceFormatter:p=>tl(p,0)}});
-  const s=botChart.addAreaSeries({lineColor:c,topColor:up?'rgba(47,224,160,.35)':'rgba(255,92,124,.35)',bottomColor:'rgba(0,0,0,0)',lineWidth:2.5,priceLineVisible:false});
+    crosshair:{mode:0,vertLine:{color:cv('--mu2'),labelBackgroundColor:'#f5b83d'},horzLine:{color:cv('--mu2'),labelBackgroundColor:'#f5b83d'}},handleScroll:false,handleScale:false,localization:{locale:'tr-TR',priceFormatter:p=>tl(p,0)}});
+  const s=botChart.addAreaSeries({lineColor:c,topColor:up?'rgba(61,220,151,.35)':'rgba(255,107,107,.35)',bottomColor:'rgba(0,0,0,0)',lineWidth:2.5,priceLineVisible:false});
   s.setData(eg.map(x=>({time:x[0]+10800,value:x[1]})));s.createPriceLine({price:B.ayar.butce,color:cv('--mu2'),lineStyle:2,lineWidth:1,axisLabelVisible:true,title:'bütçe'});
   botChart.timeScale().fitContent();new ResizeObserver(()=>botChart&&botChart.applyOptions({width:el.clientWidth})).observe(el)}
 function botAyarAc(){const a=Object.assign({},B.ayar);
@@ -1973,15 +2216,19 @@ function botAyarAc(){const a=Object.assign({},B.ayar);
     <div class="alanf"><span class="lbl">İşlem başı risk</span>${sec('risk',[0.5,1,1.5,2,3],a.risk,k=>'%'+tl(k,1))}</div>
     <div class="alanf"><span class="lbl">En düşük sinyal kalitesi</span>${sec('kalite',['A+','A','B'],a.kalite,k=>k+(k==='B'?' ve üstü':k==='A'?' ve üstü':' sadece'))}</div>
     <label class="alanf"><span class="lbl">En düşük güven: <b class="act" id="b_gv">${a.guven}</b></span><input type="range" id="b_guven" min="50" max="90" step="5" value="${a.guven}"></label>
+    <div class="alanf"><span class="lbl">Günlük zarar limiti</span>${sec('gunluk_zarar',[0,2,3,5],a.gunluk_zarar,k=>+k?'%'+k:'Kapalı')}<div class="mu" style="font-size:12px;font-weight:600;margin-top:4px">Gün içinde bu kadar kayıpta bot o gün yeni işlem açmaz; açık pozisyonları takip etmeye devam eder.</div></div>
+    <div class="alanf"><div class="anahtar ${a.piyasa_filtre?'on':''}" data-sec="piyasa_filtre" data-v="${a.piyasa_filtre?0:1}"><div><b style="font-size:14px">Piyasa filtresi</b><div class="mu" style="font-size:12px;font-weight:600">BIST100 sert düşerken AL sinyallerine girme</div></div><span class="tg"></span></div>
+     ${a.piyasa_filtre?`<div style="margin-top:8px">${sec('piyasa_esik',[-1,-1.5,-2,-3],a.piyasa_esik,k=>'BIST100 '+tl(k,1)+'%')}</div>`:''}</div>
     <div class="dugmeler" style="padding:6px 0 0"><button class="btn ana" id="b_kaydet">Kaydet</button></div>
     <button class="btn kir" style="width:100%;margin-top:10px" id="b_sifirla">Sıfırla ve yeni bütçeyle başlat</button>
     <p class="not">Bütçe değişikliği, bot henüz işlem yapmadıysa hemen uygulanır; yaptıysa sıfırlama gerekir. Giriş/çıkışta %0,05 kayma hesaba katılır. 1 ve 5 dk işlemleri gün sonunda kapatılır.</p>`};
   ciz();sheetAc();
   $('#form').onclick=e=>{const t=e.target.closest('[data-sec],[data-adim],#b_kaydet,#b_sifirla');if(!t)return;
     a.butce=parseFloat(String($('#b_butce').value).replace(/\./g,'').replace(',','.'))||a.butce;a.guven=+$('#b_guven').value;
-    if(t.dataset.sec){a[t.dataset.sec]=t.dataset.sec==='risk'?+t.dataset.v:t.dataset.v;ciz();baglaGv()}
+    if(t.dataset.sec){const k=t.dataset.sec,v=t.dataset.v;a[k]=k==='piyasa_filtre'?v==='1':['risk','gunluk_zarar','piyasa_esik'].includes(k)?+v:v;ciz();baglaGv()}
     else if(t.dataset.adim){const[k,d]=t.dataset.adim.split(':');a[k]=Math.max(1,Math.min(k==='gunluk'?50:20,a[k]+ +d));ciz();baglaGv()}
-    else{const qs=new URLSearchParams({bot:t.id==='b_sifirla'?'sifirla':'ayar',butce:Math.round(a.butce),gunluk:a.gunluk,acik:a.acik,risk:a.risk,guven:a.guven,dilim:a.dilim,kalite:a.kalite});
+    else{const qs=new URLSearchParams({bot:t.id==='b_sifirla'?'sifirla':'ayar',butce:Math.round(a.butce),gunluk:a.gunluk,acik:a.acik,risk:a.risk,guven:a.guven,dilim:a.dilim,kalite:a.kalite,
+      gunluk_zarar:a.gunluk_zarar,piyasa_filtre:a.piyasa_filtre?1:0,piyasa_esik:a.piyasa_esik});
       if(t.id==='b_sifirla'&&!confirm('Bot tüm geçmişiyle sıfırlanacak. Emin misin?'))return;sheetKapat();ustGit('?'+qs.toString())}};
   const baglaGv=()=>{const g=$('#b_guven');g.oninput=e=>$('#b_gv').textContent=e.target.value};baglaGv()}
 function sheetAc(){$('#form').classList.add('ac');$('#perde').classList.add('ac')}
@@ -2060,7 +2307,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now(
 $('#nav').onclick=e=>{const b=e.target.closest('button');if(b)git(b.dataset.e)};
 $('#ust').onclick=e=>{const t=e.target.closest('[data-mod],[data-git]');if(!t)return;const d=t.dataset;
   if(d.mod){M=d.mod;D.set('mod',M);ciz()}else if(d.git)git(d.git)};
-$('#ekran').onclick=e=>{const t=e.target.closest('[data-pf],[data-pg],[data-mf],[data-pt],[data-af],[data-adl],[data-bt],[data-bot],[data-botayar],[data-kayitbilgi],[data-botkapat],[data-bothepsi],[data-git],[data-sek],[data-sektemizle],[data-kapat],[data-sil],[data-h]');if(!t)return;const d=t.dataset;
+$('#ekran').onclick=e=>{const t=e.target.closest('a.hb')?null:e.target.closest('[data-pf],[data-pg],[data-mf],[data-pt],[data-af],[data-adl],[data-bt],[data-bot],[data-botayar],[data-kayitbilgi],[data-botkapat],[data-bothepsi],[data-git],[data-sek],[data-sektemizle],[data-kapat],[data-sil],[data-h]');if(!t)return;const d=t.dataset;
   if(d.pf){pf=d.pf;D.set('pf',pf);ciz()}else if(d.pg){pg=d.pg;D.set('pg',pg);ciz()}else if(d.mf){mf=d.mf;D.set('mf',mf);ciz()}else if(d.pt){pt=d.pt;D.set('pt',pt);ciz()}
   else if(d.af){af=d.af;D.set('af',af);ciz()}else if(d.adl){adl=d.adl;D.set('adl',adl);ciz()}
   else if(d.bt){bt=d.bt;D.set('bt',bt);ciz();sayAnim($('#ekran'))}
@@ -2069,7 +2316,7 @@ $('#ekran').onclick=e=>{const t=e.target.closest('[data-pf],[data-pg],[data-mf],
   else if(d.kayitbilgi)kayitBilgi()
   else if(d.botkapat){if(confirm('Bu pozisyon anlık fiyattan kapatılsın mı?'))ustGit('?bot=kapat&id='+encodeURIComponent(d.botkapat))}
   else if(d.bothepsi){if(confirm('Botun tüm açık pozisyonları kapatılsın mı?'))ustGit('?bot=hepsi')}
-  else if(d.git){if(d.git==='sektor'){ekran='piyasa';pg='sektor';D.set('ekran',ekran);ciz(true)}else git(d.git)}
+  else if(d.git){if(d.afh){af='haber';D.set('af',af)}if(d.git==='sektor'){ekran='piyasa';pg='sektor';D.set('ekran',ekran);ciz(true)}else git(d.git)}
   else if(d.sek){sekSec=d.sek;ekran='piyasa';pg='liste';ciz(true)}else if(d.sektemizle){sekSec=null;ciz()}
   else if(d.kapat){const p=poz.find(x=>x.id==d.kapat),o=p&&H[p.s]&&H[p.s][p.mod];if(p&&o){const dv=degerlendir(p);p.kap={fiyat:o.p,realize:dv.realize-(o.p-p.giris)*(p.lot-dv.kalanLot)};D.set('poz',poz);toast('Pozisyon kapatıldı');ciz()}}
   else if(d.sil){poz=poz.filter(x=>x.id!=d.sil);D.set('poz',poz);ciz()}
@@ -2093,8 +2340,8 @@ function detayCiz(){const h=H[secili],o=h[DM];
   const g=gorus(h,DM);$('#dkarar').innerHTML=`<div class="karar ${g.tur}"><b class="${g.tur==='AL'?'up':g.tur==='SAT'?'dn':'mu'}">${g.tur}</b>${esc(g.metin)}</div>`;
   $('#dtf').innerHTML=MODLAR.map(m=>`<button class="chip${m===DM?' on':''}" data-dm="${m}" ${h[m]?'':'disabled'}>${GOSTER[m]}${h[m]&&h[m].akt?` <span style="color:${m===DM?'#fff':h[m].akt.yon>0?'var(--up)':'var(--dn)'}">●</span>`:''}</button>`).join('');
   $('#dplan').innerHTML=o.akt?`<div class="bolum"><h3>İşlem fişi</h3></div>${fis(h,DM,true)}`
-   :`<div class="bolum"><h3>Tetik seviyeleri</h3><span class="lbl">${GOSTER[DM]}</span></div><div class="kart" style="padding-bottom:12px"><div class="ig"><div><small>AL tetiği</small><b class="up">${tl(o.tetik.ust)}</b><em class="mu">üstünde kapanış</em></div>
-     <div><small>Çıkış tetiği</small><b class="dn">${tl(o.tetik.alt)}</b><em class="mu">altında kapanış</em></div><div><small>Vade</small><b style="font-size:12.5px">${V.vade[DM].ad}</b><em class="mu">${V.vade[DM].sure}</em></div></div></div>`;
+   :`<div class="bolum"><h3>Tetik seviyeleri</h3><span class="lbl">${GOSTER[DM]}</span></div><div class="kart" style="padding-bottom:12px"><div class="ig"><div><small>AL tetiği</small><b class="up">${o.tetik.ust?tl(o.tetik.ust):'Yok'}</b><em class="mu">${o.tetik.ust?'üstünde kapanış':'üstte direnç yok'}</em></div>
+     <div><small>Çıkış tetiği</small><b class="dn">${o.tetik.alt?tl(o.tetik.alt):'Yok'}</b><em class="mu">${o.tetik.alt?'altında kapanış':'altta destek yok'}</em></div><div><small>Vade</small><b style="font-size:12.5px">${V.vade[DM].ad}</b><em class="mu">${V.vade[DM].sure}</em></div></div></div>`;
   setTimeout(()=>grafikKur(h,DM),60);sekmeCiz()}
 $('#dtf').onclick=e=>{const b=e.target.closest('[data-dm]');if(!b||b.disabled)return;DM=b.dataset.dm;D.set('detay',[secili,DM]);detayCiz()};
 function kapat(){$('#detay').classList.remove('ac');sheetKapat();D.set('detay',null);setTimeout(()=>{if(chart){chart.remove();chart=null}},400)}
@@ -2115,38 +2362,43 @@ function formAc(tip){const h=H[secili],o=h[DM],s=o.akt,L=lotHesap(s)||{lot:0};$(
 
 function grafikKur(h,m){if(chart){chart.remove();chart=null}const el=$('#grafik'),o=h[m];
   if(!window.LightweightCharts){el.innerHTML='<div class="bos" style="margin:0 16px">Grafik yüklenemedi. Sayfayı yenile.</div>';return}
-  const css=getComputedStyle(document.documentElement),cv=k=>css.getPropertyValue(k).trim(),UP='#2fe0a0',DN='#ff5c7c';
+  const css=getComputedStyle(document.documentElement),cv=k=>css.getPropertyValue(k).trim(),UP='#3ddc97',DN='#ff6b6b';
   chart=LightweightCharts.createChart(el,{width:el.clientWidth,height:310,layout:{background:{type:'solid',color:'transparent'},textColor:cv('--mu'),fontFamily:'Manrope',fontSize:10},
     grid:{vertLines:{color:cv('--ln2')},horzLines:{color:cv('--ln2')}},rightPriceScale:{borderColor:cv('--ln'),scaleMargins:{top:.06,bottom:.2}},
     timeScale:{borderColor:cv('--ln'),timeVisible:m!=='w',secondsVisible:false,rightOffset:5,barSpacing:m==='1'?5:7},
-    crosshair:{mode:0,vertLine:{color:cv('--mu2'),labelBackgroundColor:'#7c6cff'},horzLine:{color:cv('--mu2'),labelBackgroundColor:'#7c6cff'}},localization:{locale:'tr-TR',priceFormatter:p=>tl(p)}});
+    crosshair:{mode:0,vertLine:{color:cv('--mu2'),labelBackgroundColor:'#f5b83d'},horzLine:{color:cv('--mu2'),labelBackgroundColor:'#f5b83d'}},localization:{locale:'tr-TR',priceFormatter:p=>tl(p)}});
   const md=o.m,n=md.length,zam=md.map(x=>x[0]);
-  const mum=chart.addCandlestickSeries({upColor:UP,downColor:DN,borderVisible:false,wickUpColor:UP,wickDownColor:DN,priceLineColor:'#7c6cff',priceLineStyle:2});
+  const mum=chart.addCandlestickSeries({upColor:UP,downColor:DN,borderVisible:false,wickUpColor:UP,wickDownColor:DN,priceLineColor:'#f5b83d',priceLineStyle:2});
   mum.setData(md.map(x=>({time:x[0],open:x[1],high:x[2],low:x[3],close:x[4]})));
   const hac=chart.addHistogramSeries({priceScaleId:'h',priceFormat:{type:'volume'},lastValueVisible:false,priceLineVisible:false});chart.priceScale('h').applyOptions({scaleMargins:{top:.84,bottom:0}});
-  const dl=delta(md);hac.setData(md.map((x,i)=>({time:x[0],value:x[5],color:dl[i]>=0?'rgba(47,224,160,.35)':'rgba(255,92,124,.35)'})));
+  const dl=delta(md);hac.setData(md.map((x,i)=>({time:x[0],value:x[5],color:dl[i]>=0?'rgba(61,220,151,.35)':'rgba(255,107,107,.35)'})));
   const cz=(r,w=1,st=0)=>chart.addLineSeries({color:r,lineWidth:w,lineStyle:st,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false});
-  const kp=md.map(x=>x[4]);const e20=cz('#22d3ee'),e50=cz('#a99bff');e20.setData(ema(kp,20).map((v,i)=>({time:zam[i],value:v})));e50.setData(ema(kp,50).map((v,i)=>({time:zam[i],value:v})));
-  const vw=cz('#ffb547',1.5,2);if(m!=='w')vw.setData(vwapHesap(md).map((v,i)=>({time:zam[i],value:v})));
+  const kp=md.map(x=>x[4]);const e20=cz('#7dc4ff'),e50=cz('#c9a7ff');e20.setData(ema(kp,20).map((v,i)=>({time:zam[i],value:v})));e50.setData(ema(kp,50).map((v,i)=>({time:zam[i],value:v})));
+  const vw=cz('#f5b83d',1.5,2);if(m!=='w')vw.setData(vwapHesap(md).map((v,i)=>({time:zam[i],value:v})));
   const fs=[];o.form.forEach(f=>f.cizgiler.forEach(c=>{const s=cz(f.yon<0?'#ff8aa0':'#a99bff',2);s.setData([{time:c[0],value:c[1]},{time:c[2],value:c[3]}]);fs.push(s)}));
   let cl=[],bantlar=[];const lo=Math.min(...md.map(x=>x[3]))*.97,hi=Math.max(...md.map(x=>x[2]))*1.03;
   el.style.position='relative';const kat=document.createElement('div');kat.className='bantkat';el.appendChild(kat);
   const yari=Math.max(0.0015,(o.atr||0.6)/100*0.22);   // bant yarı kalınlığı: hissenin oynaklığına göre
   function bantCiz(){if(!chart||typeof mum.priceToCoordinate!=='function'){kat.innerHTML='';return}
-    const sag=(chart.priceScale('right').width&&chart.priceScale('right').width())||56,H=el.clientHeight-26;
-    kat.innerHTML=bantlar.map(s=>{const y1=mum.priceToCoordinate(s[0]*(1+yari)),y2=mum.priceToCoordinate(s[0]*(1-yari));if(y1==null||y2==null)return'';
-      const ust=Math.min(y1,y2),boy=Math.max(4,Math.abs(y2-y1));if(ust>H||ust+boy<0)return'';const g=s[2]||0,d=s[1]==='D',r=d?'47,224,160':'255,92,124';
-      return `<div class="bant" style="top:${ust}px;height:${boy}px;right:${sag}px;background:rgba(${r},${(0.07+0.16*g).toFixed(2)});border-color:rgba(${r},${(0.35+0.5*g).toFixed(2)})">
-        <span style="background:rgba(${r},.9)">${d?'Destek':'Direnç'}${s[3]>1?' · '+s[3]+' test':''}${g>=0.7?' · güçlü':''}</span></div>`}).join('')}
+    const sag=(chart.priceScale('right').width&&chart.priceScale('right').width())||56,W=el.clientWidth-sag,H=el.clientHeight-26,ts=chart.timeScale();
+    const xz=t=>{const x=ts.timeToCoordinate?ts.timeToCoordinate(t):null;return x==null?(t<zam[0]?0:null):x};
+    kat.innerHTML=bantlar.map(s=>{const y1=mum.priceToCoordinate(s[7]),y2=mum.priceToCoordinate(s[6]);if(y1==null||y2==null)return'';
+      const ust=Math.min(y1,y2),boy=Math.max(5,Math.abs(y2-y1));if(ust>H||ust+boy<0)return'';
+      const g=s[2]||0,tip=s[1],r=tip==='D'?'61,220,151':tip==='R'?'255,107,107':'245,184,61';
+      let x0=xz(s[8]);if(x0==null||x0<0)x0=0;x0=Math.min(x0,W-60);
+      const ad=tip==='D'?'Destek':tip==='R'?'Direnç':'Fiyat bölgede';
+      const nok=(s[12]||[]).map(([t,pz])=>{const x=t<zam[0]?null:xz(t),y=mum.priceToCoordinate(pz);return x==null||y==null||x<2||x>W?'':`<i class="dok" style="left:${x}px;top:${y}px;background:rgb(${r})"></i>`}).join('');
+      return `<div class="bant" style="top:${ust}px;height:${boy}px;left:${x0}px;width:${W-x0}px;background:rgba(${r},${(0.08+0.14*g).toFixed(2)});border-color:rgba(${r},${(0.4+0.5*g).toFixed(2)})">
+        <span style="background:rgb(${r})">${ad} ${s[3]} tepki</span></div>${nok}`}).join('')}
   chart.timeScale().subscribeVisibleLogicalRangeChange(()=>requestAnimationFrame(bantCiz));
   function uyg(){[e20,e50].forEach(s=>s.applyOptions({visible:gor.ema}));vw.applyOptions({visible:gor.vwap&&m!=='w'});fs.forEach(s=>s.applyOptions({visible:gor.form}));
     cl.forEach(p=>mum.removePriceLine(p));cl=[];const ek=x=>cl.push(mum.createPriceLine(Object.assign({lineWidth:1,axisLabelVisible:false},x)));
-    bantlar=[];if(gor.sev){const al=o.sev.filter(s=>s[1]==='D'&&s[0]>lo).sort((a,b)=>b[0]-a[0]).slice(0,3),us=o.sev.filter(s=>s[1]==='R'&&s[0]<hi).sort((a,b)=>a[0]-b[0]).slice(0,3);
-      bantlar=[...al,...us];bantlar.forEach(s=>{if((s[2]||0)>=0.6)ek({price:s[0],color:s[1]==='D'?'#2fe0a0':'#ff5c7c',lineVisible:false,axisLabelVisible:true,title:''})})}
+    bantlar=[];if(gor.sev){const p=o.p,us=o.sev.filter(s=>s[1]==='R').sort((a,b)=>a[6]-b[6]).slice(0,2),al=o.sev.filter(s=>s[1]==='D').sort((a,b)=>b[7]-a[7]).slice(0,2),ic=o.sev.filter(s=>s[1]==='I').slice(0,1);
+      bantlar=[...us,...ic,...al];bantlar.forEach(s=>{ek({price:s[1]==='D'?s[7]:s[6],color:s[1]==='D'?'#3ddc97':s[1]==='R'?'#ff6b6b':'#f5b83d',lineVisible:false,axisLabelVisible:true,title:''})})}
     requestAnimationFrame(bantCiz);
     if(gor.prof&&o.prof){ek({price:o.prof.poc,color:'#ffb547',lineStyle:0,title:'POC',axisLabelVisible:true});ek({price:o.prof.vah,color:'rgba(139,147,167,.5)',lineStyle:1,title:'VAH'});ek({price:o.prof.val,color:'rgba(139,147,167,.5)',lineStyle:1,title:'VAL'})}
-    const s=o.akt;if(gor.plan&&s){ek({price:s.stop,color:DN,lineStyle:0,title:'SL',axisLabelVisible:true});ek({price:s.giris_ust,color:'#7c6cff',lineStyle:2,title:'GİRİŞ'});ek({price:s.giris_alt,color:'#7c6cff',lineStyle:2});
-      [s.hedef,s.hedef2,s.hedef3].forEach((p,i)=>ek({price:p,color:`rgba(47,224,160,${1-i*.25})`,lineStyle:0,title:'H'+(i+1),axisLabelVisible:i===0}))}
+    const s=o.akt;if(gor.plan&&s){ek({price:s.stop,color:DN,lineStyle:0,title:'SL',axisLabelVisible:true});ek({price:s.giris_ust,color:'#f5b83d',lineStyle:2,title:'GİRİŞ'});ek({price:s.giris_alt,color:'#f5b83d',lineStyle:2});
+      [s.hedef,s.hedef2,s.hedef3].forEach((p,i)=>ek({price:p,color:`rgba(61,220,151,${1-i*.25})`,lineStyle:0,title:'H'+(i+1),axisLabelVisible:i===0}))}
     const bp=(B.poz||[]).find(p=>p.s===secili&&p.mod===m);if(bp){ek({price:bp.giris,color:'#22d3ee',lineStyle:0,lineWidth:2,title:'BOT',axisLabelVisible:true})}
     mum.setMarkers(gor.plan?o.sinF.filter(s=>s.t>=zam[0]&&s.t<=zam[n-1]).map(s=>({time:s.t,position:s.yon>0?'belowBar':'aboveBar',color:s.yon>0?UP:DN,shape:s.yon>0?'arrowUp':'arrowDown',text:s.tur})):[])}
   uyg();
@@ -2154,7 +2406,7 @@ function grafikKur(h,m){if(chart){chart.remove();chart=null}const el=$('#grafik'
   let sec=D.get('ar_'+m,Object.keys(ar)[1]);if(!ar[sec])sec=Object.keys(ar)[1];
   const arU=()=>{const k=Math.min(ar[sec],n);chart.timeScale().setVisibleLogicalRange({from:n-k-.5,to:n+4})};arU();
   const gs=$('#gsec'),t=(k,a,on)=>`<button class="chip${on?' on':''}" data-k="${k}">${a}</button>`;
-  const gsc=()=>{gs.innerHTML=Object.keys(ar).map(k=>t('a:'+k,k,sec===k)).join('')+'<span class="ayr"></span>'+t('g:plan','Plan',gor.plan)+(m!=='w'?t('g:vwap','VWAP',gor.vwap):'')+t('g:ema','EMA',gor.ema)+t('g:sev','Destek/Direnç',gor.sev)+t('g:form','Formasyon',gor.form)+t('g:prof','Hacim profili',gor.prof)};gsc();
+  const gsc=()=>{gs.innerHTML=Object.keys(ar).map(k=>t('a:'+k,k,sec===k)).join('')+'<span class="ayr"></span>'+t('g:plan','Plan',gor.plan)+(m!=='w'?t('g:vwap','VWAP',gor.vwap):'')+t('g:ema','EMA',gor.ema)+t('g:sev','Destek / direnç',gor.sev)+t('g:form','Formasyon',gor.form)+t('g:prof','Hacim profili',gor.prof)};gsc();
   gs.onclick=e=>{const b=e.target.closest('[data-k]');if(!b)return;const[tp,k]=b.dataset.k.split(':');if(tp==='a'){sec=k;D.set('ar_'+m,k);arU()}else{gor[k]=!gor[k];D.set('gor2',gor);uyg()}gsc()};
   const ix=Object.fromEntries(md.map((x,i)=>[x[0],i]));
   const lg=i=>{const x=md[i];if(!x)return'';const d=dl[i];return `A <b>${tl(x[1])}</b> Y <b>${tl(x[2])}</b> D <b>${tl(x[3])}</b> K <b class="${x[4]>=x[1]?'up':'dn'}">${tl(x[4])}</b> · Hac <b>${tl(x[5],0)}</b> · <span class="${d>=0?'up':'dn'}">alıcı %${tl((1+d/(x[5]||1))*50,0)}</span>`};
@@ -2185,11 +2437,19 @@ function sekmeCiz(){document.querySelectorAll('#sekmeler button').forEach(b=>b.c
       <tr><td>Son mum</td><td colspan="2" style="white-space:normal">${(o.mum||[]).length?o.mum.map(esc).join(', '):'<span class="mu">belirgin formasyon yok</span>'}</td></tr></table></div>`;
     x+=`<div class="bolum"><h3>Formasyonlar</h3></div>`+(o.form.length?`<div class="kart"><table class="tbl"><tr><th>Formasyon</th><th>Kritik</th><th>Durum</th></tr>${o.form.map(f=>`<tr><td>${esc(f.ad)}</td><td>${tl(f.ref)}</td><td class="${f.durum==='kırıldı'?(f.yon>0?'up':'dn'):'mu'}">${f.durum}</td></tr>`).join('')}</table></div>`:`<div class="bos">Formasyon yok</div>`);
     const sv=[...o.sev].sort((a,b)=>Math.abs(a[0]-o.p)-Math.abs(b[0]-o.p)).slice(0,10).sort((a,b)=>b[0]-a[0]);
-    x+=`<div class="bolum"><h3>Destek / direnç</h3><span class="lbl">güce göre</span></div>`+(sv.length?`<div class="kart liste">${sv.map(s=>{const g=s[2]||0,d=s[1]==='D';return `<div style="cursor:default">
-      <span class="avatar" style="width:38px;height:38px;background:${d?'var(--ups)':'var(--dns)'};color:${d?'var(--up)':'var(--dn)'};box-shadow:none">${d?'D':'R'}</span>
-      <div class="ad"><b>${tl(s[0])} <span class="mu" style="font-weight:700;font-size:12px">${yz((s[0]/o.p-1)*100,1)}</span></b><small>${s[3]?s[3]+' kez test edildi · ':''}${esc(s[4]||'')}${s[5]?' · rol değişimi':''}</small></div>
-      <div class="sag" style="width:74px"><small class="${g>=0.7?'up':g>=0.5?'wa':'mu'}">${g>=0.7?'Güçlü':g>=0.5?'Orta':'Zayıf'}</small><div class="bar" style="margin-top:5px"><i style="width:${Math.round(g*100)}%"></i></div></div></div>`}).join('')}</div>`:`<div class="bos">Yakında güçlü seviye yok</div>`)+
-     `<p class="not"><b style="color:var(--tx)">Seviyeler nasıl bulunuyor?</b> Fiyatın en az ~1 ATR'lik belirgin dönüş yaptığı tepe ve dipler kümelenir; aynı bölgede ne kadar çok dönüş olduysa, ne kadar yakın zamandaysa ve eski direnç desteğe döndüyse (rol değişimi) seviye o kadar güçlü sayılır. Buna günlük grafiğin ana tepe/dipleri ve en çok işlem gören fiyatlar (hacim profili POC/VAH/VAL) eklenir. Bot sadece güçlü seviyelerde sinyal üretir.</p>`}
+    x+=`<div class="bolum"><h3>Destek ve direnç bölgeleri</h3><span class="lbl">fiyata yakınlığa göre</span></div>`+(sv.length?`<div class="kart liste">${sv.map(s=>{const g=s[2]||0,tip=s[1];
+      const rk=tip==='D'?['var(--ups)','var(--up)','D']:tip==='R'?['var(--dns)','var(--dn)','R']:['var(--was)','var(--wa)','◆'];
+      const uz=tip==='R'?(s[6]/o.p-1)*100:tip==='D'?(s[7]/o.p-1)*100:0;
+      const det=[s[10]?s[10]+' kez satış':'',s[11]?s[11]+' kez alım':''].filter(Boolean).join(', ');
+      return `<div style="cursor:default"><span class="avatar" style="width:38px;height:38px;background:${rk[0]};color:${rk[1]};box-shadow:none">${rk[2]}</span>
+      <div class="ad"><b>${tl(s[6])} – ${tl(s[7])} <span class="mu" style="font-weight:700;font-size:12px">${tip==='I'?'fiyat içinde':yz(uz,1)}</span></b><small>${det||s[3]+' tepki'}${s[9]?', son tepki '+saatYaz(s[9],DM):''}${s[5]?', rol değiştirdi':''}${s[4]!=='tepe-dip'?', '+esc(s[4]):''}</small></div>
+      <div class="sag" style="width:70px"><small class="${g>=0.7?'up':g>=0.5?'wa':'mu'}">${g>=0.7?'Güçlü':g>=0.5?'Orta':'Zayıf'}</small><div class="bar" style="margin-top:5px"><i style="width:${Math.round(g*100)}%"></i></div></div></div>`}).join('')}</div>`:`<div class="bos">Yakında tepki görmüş bir bölge yok</div>`)+
+     `<p class="not"><b style="color:var(--tx)">Seviyeler nasıl bulunuyor?</b> Önce belirgin tepe ve diplerden aday bölgeler çıkarılır. Sonra son ~300 mumun her biri kontrol edilir: fiyat bölgeye fitille girip dışında kapandıysa, o mum yerel bir tepe ya da dipse ve fiyat ardından bölgeden en az 1,5 ATR (ortalama mum boyunun 1,5 katı) uzaklaştıysa bu bir tepki sayılır. Hiç tepki görmeyen bölge çizilmez. Tepki sayısı, son tepkinin ne kadar yakın olduğu ve bölgenin hem destek hem direnç olarak çalışması (rol değişimi) gücü belirler. Grafikte bölge ilk tepkiden bugüne çizilir, noktalar tepki anlarıdır.</p>`}
+  else if(sekme==='haber'){const hb=H[secili].hb;
+    if(!hb||!hb.l.length)x+=`<div class="bos"><b>Son 7 günde haber bulunamadı</b>${V.haber_durum&&V.haber_durum.hata?'Haber kaynağına ulaşılamadı: '+esc(V.haber_durum.hata):'Haberler sinyali olan ve en likit hisseler için ~30 dakikada bir güncellenir.'}</div>`;
+    else{const sk=hb.skor;x+=`<div class="kart pad" style="margin-bottom:12px"><div class="sat1"><div><span class="lbl">Son 48 saatin haber havası</span><div style="font:800 24px var(--disp);margin-top:2px" class="${sk>=2?'up':sk<=-2?'dn':''}">${sk>=2?'Olumlu':sk<=-2?'Olumsuz':'Nötr'}</div></div><span class="rozet ${sk>=2?'up':sk<=-2?'dn':''}">puan ${sk>0?'+':''}${tl(sk,1)}</span></div>
+      <p class="not" style="margin:8px 0 0">Başlıklardaki kelimelere göre puanlanır (temettü, rekor kâr, ihale kazandı olumlu; zarar, soruşturma, ceza olumsuz). Olumlu akış AL sinyalinin güvenini artırır, olumsuz akış düşürür; bot olumsuz haberli hisseye girmez.</p></div>
+      <div class="kart">${hb.l.map(h=>haberSatir({b:h.b,k:h.k,u:h.u,p:h.p,t:h.t})).join('')}</div>`}}
   else{const l=[...o.sinF].reverse(),bit=l.filter(s=>s.sonuc!=='açık'),hd=bit.filter(s=>s.sonuc==='hedef').length,st=bit.filter(s=>s.sonuc==='stop').length;
     x+=`<div class="istat"><div><span class="lbl">Sinyal</span><b>${l.length}</b></div><div><span class="lbl">Hedef / stop</span><b><span class="up">${hd}</span> / <span class="dn">${st}</span></b></div><div><span class="lbl">İsabet</span><b>${hd+st?'%'+tl(hd/(hd+st)*100,0):'—'}</b></div></div>`;
     x+=l.length?`<div class="kart" style="margin-top:12px"><table class="tbl"><tr><th>Zaman</th><th>Yön</th><th>Gv</th><th>Sonuç</th></tr>${l.slice(0,20).map(s=>`<tr><td>${s.saat}</td><td><span class="yon ${s.yon>0?'al':'sat'}">${s.tur}</span></td><td>${s.guven}</td>
@@ -2280,7 +2540,7 @@ def mod_json(a: dict, eski_sin: list | None) -> dict:
             if j1 > j0:
                 cizgiler.append([_ts(df.index[j0], mod), _r(y0, 4), _ts(df.index[j1], mod), _r(y1, 4)])
         formlar.append(dict(ad=f["ad"], yon=f["yon"], durum=f["durum"], ref=_r(f["ref"], 4), hedef=_r(f["hedef"], 4), cizgiler=cizgiler))
-    yorum, tetik = bot_yorumu(ctx, a["sev"], a["formlar"])
+    yorum, tetik = a["yorum"], a["tetik"]
     sinyaller = filtrele(a["sinyaller"], ESIK)
     tam = [sinyal_json(s, df, n, fiyat, mod) for s in sinyaller]
     akl = [x for x in tam if x["sonuc"] == "açık"]
@@ -2292,7 +2552,10 @@ def mod_json(a: dict, eski_sin: list | None) -> dict:
     return dict(
         p=_r(fiyat, 4), d=_r(a["degisim"], 2), m=mumlar, rv=_r(a["rv"], 2), ab=_r(a["ab"], 3), vw=_r(a["vwap"], 4),
         rsi=_r(a["rsi"], 1), macd=_r(a["macd"], 4), atr=_r(a["atr"], 2), yapi=a["yapi"], htf=a["htf"], rs=_r(a["rs"], 2),
-        sev=[[_r(d["p"], 4), "D" if d["p"] < fiyat else "R", _r(d["guc"], 2), d["temas"], d["kaynak"], int(bool(d.get("rol")))]
+        sev=[[_r(d["p"], 4), "D" if d["hi"] < fiyat else ("R" if d["lo"] > fiyat else "I"), _r(d["guc"], 2), d["temas"], d["kaynak"],
+              int(bool(d.get("rol"))), _r(d["lo"], 4), _r(d["hi"], 4), _ts(df.index[min(d["ilk"], len(df) - 1)], mod),
+              _ts(df.index[min(d["son"], len(df) - 1)], mod), d.get("ust_n", 0), d.get("alt_n", 0),
+              [[_ts(df.index[min(j, len(df) - 1)], mod), _r(pz, 4)] for j, pz in d.get("dokunus", [])]]
              for d in a["sev_d"] if abs(d["p"] / fiyat - 1) <= 0.25],
         mum=a.get("mum", []), uyum=a.get("uyum", 0), adx=_r(a.get("adx"), 0),
         form=formlar, yorum=yorum, tetik=tetik, gun_bar=max(gun_bar, {"1": 300, "5": 60, "g": 26}.get(mod, 1)) if mod != "w" else 1,
@@ -2416,7 +2679,8 @@ def akis_olaylari(analiz: dict) -> list[dict]:
 BOT_DOSYA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_canli.json")
 KAYMA = 0.0005          # her alış ve satışta %0,05 kayma (gerçekçi dolum için)
 KALITE_SIRA = {"A+": 0, "A": 1, "B": 2, "C": 3}
-BOT_VARSAYILAN = dict(butce=100000.0, gunluk=5, acik=3, risk=1.0, guven=65, dilim="g", kalite="A")
+BOT_VARSAYILAN = dict(butce=100000.0, gunluk=5, acik=3, risk=1.0, guven=65, dilim="g", kalite="A",
+                      gunluk_zarar=3.0, piyasa_filtre=True, piyasa_esik=-1.5)
 
 
 def _ep_dizi(df) -> np.ndarray:
@@ -2635,6 +2899,10 @@ class CanliBot:
     def _ozkaynak(self) -> float:
         return self.d["nakit"] + sum(p["kalan"] * p["fiyat"] for p in self.d["poz"])
 
+    def _onceki_gun_oz(self, bugun: str):
+        onceki = [v.get("oz") for g, v in sorted(self.d["gunler"].items()) if g < bugun and v.get("oz")]
+        return onceki[-1] if onceki else None
+
     @staticmethod
     def _gun(t: int) -> str:
         return dt.datetime.fromtimestamp(t, TZ).strftime("%Y-%m-%d")
@@ -2714,7 +2982,7 @@ class CanliBot:
         self._hedefler(p, h, t)
 
     # --- her taramada çağrılır ---
-    def tik(self, analiz: dict, acik: bool, bist_p: float | None):
+    def tik(self, analiz: dict, acik: bool, bist_p: float | None, bist_d: float | None = None):
         with self.kilit:
             d, a = self.d, self.d["ayar"]
             simdi = dt.datetime.now(TZ)
@@ -2765,7 +3033,26 @@ class CanliBot:
             gun = d["gunler"].setdefault(bugun, dict(kz=0.0, al=0, oz=None))
             mod = a["dilim"]
             gec = mod in ("1", "5") and simdi.time() >= dt.time(17, 40)
-            if d["aktif"] and acik and not gec:
+            # Günlük zarar limiti: gün başındaki değere göre kayıp sınırı aşılınca o gün yeni işlem yok
+            oz_simdi = self._ozkaynak()
+            if gun.get("oz0") is None:
+                gun["oz0"] = round(onceki_oz if (onceki_oz := self._onceki_gun_oz(bugun)) else oz_simdi, 2)
+            gun_degisim = (oz_simdi / gun["oz0"] - 1) * 100 if gun["oz0"] else 0.0
+            zarar_kilit = a.get("gunluk_zarar", 0) > 0 and gun_degisim <= -a["gunluk_zarar"]
+            if zarar_kilit and not gun.get("zk"):
+                gun["zk"] = True
+                self._log("zarar", f"Günlük zarar limiti doldu ({sayi(gun_degisim, 1)}%), bugün yeni işlem açılmayacak")
+            # Piyasa filtresi: BIST100 sert düşüyorsa yeni AL yok
+            piyasa_kilit = bool(a.get("piyasa_filtre")) and bist_d is not None and bist_d <= a.get("piyasa_esik", -1.5)
+            if piyasa_kilit and not gun.get("pk"):
+                gun["pk"] = True
+                self._log("bilgi", f"Piyasa filtresi devrede: BIST100 {sayi(bist_d, 1)}%, piyasa toparlanana kadar yeni AL yok")
+            if not piyasa_kilit and gun.get("pk") and acik and bist_d is not None:
+                gun["pk"] = False
+                self._log("bilgi", "Piyasa toparlandı, piyasa filtresi kalktı")
+            d["durum"] = dict(gun_degisim=round(gun_degisim, 2), zarar_kilit=bool(zarar_kilit), piyasa_kilit=bool(piyasa_kilit),
+                              bist_d=bist_d)
+            if d["aktif"] and acik and not gec and not zarar_kilit and not piyasa_kilit:
                 liste = analiz.get(mod, {})
                 gorulen = set(d["gorulen"])
                 eldeki = {p["s"] for p in d["poz"]}
@@ -2781,6 +3068,8 @@ class CanliBot:
                         j = sinyal_json(s, df, n, an["fiyat"], mod)
                         if KALITE_SIRA[j["kalite"]] > KALITE_SIRA[a["kalite"]]:
                             continue
+                        if s.get("haber_skor", 0) <= -2:
+                            continue                              # olumsuz haber akışı olan hisseye girilmez
                         anahtar = f"{h}-{mod}-{j['t']}"
                         f = float(an["fiyat"])
                         if anahtar in gorulen or f <= s["stop"] or not (s["giris_alt"] * 0.998 <= f <= s["giris_ust"] * 1.003):
@@ -2816,7 +3105,8 @@ class CanliBot:
             d = self.d
             yeni = dict(d["ayar"])
             for ad, tip, lo, hi in (("butce", float, 1000, 1e9), ("gunluk", int, 1, 50), ("acik", int, 1, 20),
-                                    ("risk", float, 0.1, 10), ("guven", int, 40, 95)):
+                                    ("risk", float, 0.1, 10), ("guven", int, 40, 95), ("gunluk_zarar", float, 0, 20),
+                                    ("piyasa_esik", float, -10, 0)):
                 if ad in q:
                     try:
                         yeni[ad] = min(max(tip(float(str(q[ad]).replace(",", "."))), lo), hi)
@@ -2824,6 +3114,8 @@ class CanliBot:
                         pass
             if q.get("dilim") in MODLAR:
                 yeni["dilim"] = q["dilim"]
+            if q.get("piyasa_filtre") in ("0", "1"):
+                yeni["piyasa_filtre"] = q["piyasa_filtre"] == "1"
             if q.get("kalite") in KALITE_SIRA:
                 yeni["kalite"] = q["kalite"]
             t = int(time.time())
@@ -2843,7 +3135,9 @@ class CanliBot:
                         mesaj = "Ayarlar kaydedildi · bütçe için 'Sıfırla' gerekir"
                 d["ayar"] = yeni
                 self._log("bilgi", f"Ayarlar: {DILIM_ADI[yeni['dilim']]}, günde {yeni['gunluk']} işlem, en fazla {yeni['acik']} pozisyon, "
-                                   f"risk %{sayi(yeni['risk'], 1)}, güven {yeni['guven']}+, kalite {yeni['kalite']}+")
+                                   f"risk %{sayi(yeni['risk'], 1)}, güven {yeni['guven']}+, kalite {yeni['kalite']}+, "
+                                   f"günlük zarar limiti {'%' + sayi(yeni['gunluk_zarar'], 1) if yeni['gunluk_zarar'] else 'kapalı'}, "
+                                   f"piyasa filtresi {'açık (' + sayi(yeni['piyasa_esik'], 1) + '%)' if yeni['piyasa_filtre'] else 'kapalı'}")
                 mesaj = mesaj or "Ayarlar kaydedildi"
             elif k == "baslat":
                 d["aktif"] = True
@@ -2937,11 +3231,164 @@ class CanliBot:
                         bist=_r((bist_p / d["xu0"] - 1) * 100, 2) if bist_p and d.get("xu0") else None,
                         poz=poz, islem=islem, egri=egri, gunler=gunler[-30:],
                         log=[[saat(x[0]), x[1], x[2], x[3]] for x in reversed(d["log"][-80:])],
-                        st=self._istatistik(), bugun=dict(islem=bugun.get("al", 0)),
+                        st=self._istatistik(), bugun=dict(islem=bugun.get("al", 0)), durum=d.get("durum") or {},
                         son_tik=saat(d["son_tik"]) if d.get("son_tik") else None,
                         kayit=(dict(tip="github", hazir=self.depo.hazir, hata=self.depo.hata, repo=self.depo.repo, dal=self.depo.dal,
                                     son=saat(int(self.depo.son)) if self.depo.son else None)
                                if self.depo else dict(tip="yerel")))
+
+# ---------- Haberler: Google Haberler'den hisse haberleri, Türkçe olumlu/olumsuz puanlama ----------
+HABER_OLUMLU = {
+    "rekor": 2, "kâr artış": 2, "kar artış": 2, "net kâr": 1, "net kar": 1, "kârını artırdı": 2, "karını artırdı": 2,
+    "temettü": 2, "kâr payı": 2, "kar payı": 2, "bedelsiz": 2, "geri alım": 2, "pay geri al": 2, "anlaşma imzala": 2,
+    "sözleşme imzala": 2, "ihale kazan": 2, "ihaleyi kazan": 2, "sipariş": 1, "yeni yatırım": 1, "yatırım kararı": 1,
+    "kapasite artır": 1, "ihracat": 1, "büyüme": 1, "hedef fiyat yükselt": 2, "hedef fiyatını yükselt": 2, "al tavsiyesi": 2,
+    "endeks dahil": 1, "endekse dahil": 1, "onay aldı": 1, "lisans aldı": 1, "satın aldı": 1, "ortaklık": 1, "işbirliği": 1,
+    "yükseliş": 1, "tavan": 2, "güçlü bilanço": 2, "beklentileri aştı": 2, "beklenti üstü": 2, "rating yükselt": 2, "not artır": 2,
+}
+HABER_OLUMSUZ = {
+    "zarar": -2, "net zarar": -2, "kârı düştü": -2, "karı düştü": -2, "dava": -1, "ceza": -2, "soruşturma": -2,
+    "iflas": -3, "konkordato": -3, "temerrüt": -3, "haciz": -2, "işlem yasağı": -3, "tedbir": -2, "spk tedbir": -3,
+    "hedef fiyat düşür": -2, "hedef fiyatını düşür": -2, "sat tavsiyesi": -2, "bedelli": -1, "sermaye kaybı": -2,
+    "borç": -1, "yangın": -2, "grev": -2, "üretime ara": -2, "faaliyet durdur": -3, "iptal": -1, "geriledi": -1,
+    "düşüş": -1, "taban": -2, "beklentilerin altında": -2, "beklenti altı": -2, "not düşür": -2, "rating düşür": -2,
+    "istifa": -1, "manipülasyon": -3, "gözaltı": -3, "kayyum": -3, "satış baskısı": -1,
+}
+
+
+def _tr_kucuk(metin: str) -> str:
+    return metin.replace("İ", "i").replace("I", "ı").lower()
+
+
+def haber_puani(baslik: str) -> int:
+    t = _tr_kucuk(baslik)
+    puan = 0
+    for k, v in HABER_OLUMLU.items():
+        if k in t:
+            puan += v
+    for k, v in HABER_OLUMSUZ.items():
+        if k in t:
+            puan += v
+    if "zarar" in t and ("azalt" in t or "kâra geçti" in t or "kara geçti" in t):
+        puan += 3          # "zararı azalttı", "kâra geçti" olumlu
+    return int(max(-3, min(3, puan)))
+
+
+class HaberServis:
+    """Arka planda öncelikli hisselerin haberlerini çeker (her hisse ~30 dakikada bir)."""
+
+    def __init__(self):
+        self.kilit = threading.Lock()
+        self.veri: dict[str, list[dict]] = {}
+        self.zaman: dict[str, float] = {}
+        self.hedefler: list[str] = []
+        self.hata = None
+        self.son_basari = None
+        threading.Thread(target=self._dongu, daemon=True).start()
+
+    def hedef_ayarla(self, semboller: list[str]):
+        gor, sira = set(), []
+        for s in semboller:
+            if s not in gor:
+                gor.add(s)
+                sira.append(s)
+        self.hedefler = sira[:120]
+
+    def _getir(self, sym: str) -> list[dict]:
+        sorgu = urllib.parse.quote(f'"{sym}" hisse')
+        url = f"https://news.google.com/rss/search?q={sorgu}&hl=tr&gl=TR&ceid=TR:tr"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (borsa-radar)"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            kok = ET.fromstring(r.read())
+        simdi = time.time()
+        out = []
+        for it in kok.iter("item"):
+            baslik = (it.findtext("title") or "").strip()
+            if not baslik or sym.lower() not in baslik.lower():
+                continue                                    # sadece başlığında hisse kodu geçen haberler
+            try:
+                t = email.utils.parsedate_to_datetime(it.findtext("pubDate") or "").timestamp()
+            except Exception:  # noqa: BLE001
+                continue
+            if simdi - t > 7 * 86400:
+                continue
+            kaynak = (it.findtext("source") or "").strip()
+            if kaynak and baslik.endswith(" - " + kaynak):
+                baslik = baslik[: -len(kaynak) - 3]
+            out.append(dict(b=baslik[:180], k=kaynak[:40], u=(it.findtext("link") or "")[:400], t=int(t), p=haber_puani(baslik)))
+        out.sort(key=lambda x: -x["t"])
+        tekil, gor = [], set()
+        for h in out:
+            anahtar = _tr_kucuk(h["b"])[:60]
+            if anahtar not in gor:
+                gor.add(anahtar)
+                tekil.append(h)
+        return tekil[:8]
+
+    def _dongu(self):
+        time.sleep(20)
+        while True:
+            try:
+                bekleyen = [s for s in list(self.hedefler) if time.time() - self.zaman.get(s, 0) > 1800]
+                for s in bekleyen[:40]:
+                    try:
+                        l = self._getir(s)
+                        with self.kilit:
+                            self.veri[s] = l
+                        self.son_basari, self.hata = time.time(), None
+                    except Exception as e:  # noqa: BLE001
+                        self.hata = f"{type(e).__name__}: {e}"
+                    self.zaman[s] = time.time()
+                    time.sleep(1.5)
+            except Exception as e:  # noqa: BLE001
+                self.hata = str(e)
+            time.sleep(45)
+
+    def ozet(self, sym: str) -> dict | None:
+        """Son 48 saatin haber puanı (yeni haber daha ağır)."""
+        with self.kilit:
+            l = list(self.veri.get(sym, []))
+        if not l:
+            return None
+        simdi = time.time()
+        skor = 0.0
+        for h in l:
+            yas = (simdi - h["t"]) / 3600
+            if yas <= 48:
+                skor += h["p"] * (1.0 if yas <= 24 else 0.5)
+        olumsuz = next((h for h in l if h["p"] <= -2 and simdi - h["t"] <= 48 * 3600), None)
+        olumlu = next((h for h in l if h["p"] >= 2 and simdi - h["t"] <= 48 * 3600), None)
+        return dict(skor=round(skor, 1), liste=l, olumsuz=olumsuz, olumlu=olumlu)
+
+
+def haber_uygula(analiz: dict, haber: HaberServis | None) -> dict:
+    """Taze sinyallerin güvenini haber akışına göre ayarlar. Döndürdüğü sözlük: hisse → haber özeti."""
+    ozetler = {}
+    if not haber:
+        return ozetler
+    taze = {"1": 30, "5": 12, "g": 12, "w": 5}
+    for mod, liste in analiz.items():
+        for h, a in liste.items():
+            if h not in ozetler:
+                ozetler[h] = haber.ozet(h)
+            oz = ozetler[h]
+            if not oz:
+                continue
+            n = a["ctx"]["n"]
+            for s in a["sinyaller"]:
+                if s["sonuc"] != "açık" or n - 1 - s["i"] > taze[mod] or s.get("_haber"):
+                    continue
+                s["_haber"] = True
+                etki = oz["skor"] * s["yon"]
+                if etki >= 2:
+                    s["guven"] = min(100, s["guven"] + 5)
+                    s["arti"].append("Haber akışı destekliyor" + (f": {oz['olumlu']['b'][:70]}" if oz.get("olumlu") and s["yon"] > 0 else ""))
+                elif etki <= -2:
+                    s["guven"] = max(0, s["guven"] - 12)
+                    kotu = oz["olumsuz"] if s["yon"] > 0 else oz.get("olumlu")
+                    s["eksi"].append("Haber akışı ters" + (f": {kotu['b'][:70]}" if kotu else ""))
+                s["haber_skor"] = oz["skor"]
+    return ozetler
 
 
 # ---------- Arka plan servisi: sürekli tarar, botu çalıştırır, site açılınca hazır sonuç verir ----------
@@ -2959,6 +3406,7 @@ class Servis:
         self.karne = {m: [] for m in MODLAR}
         self.bot = {m: dict(n=0) for m in MODLAR}
         self.canli = CanliBot(depo_kur())
+        self.haber = HaberServis()
         threading.Thread(target=self._dongu, daemon=True).start()
 
     def sayfa(self, mesaj: str | None = None) -> str:
@@ -3055,10 +3503,20 @@ class Servis:
             bist["spark_w"] = [_r(x, 2) for x in xug["Close"].tail(60).values] if xug is not None else bist["spark"]
         self.bist_p = bist["p"] if bist else None
 
+        # Haberler: sinyali olan, botun elindeki ve en likit hisseler öncelikli
+        oncelik = [p["s"] for p in self.canli.d.get("poz", [])]
+        for mod in ("g", "5", "1", "w"):
+            for h, a in analiz[mod].items():
+                if any(s["sonuc"] == "açık" and a["ctx"]["n"] - 1 - s["i"] <= 12 for s in a["sinyaller"][-3:]):
+                    oncelik.append(h)
+        oncelik += hizli
+        self.haber.hedef_ayarla(oncelik)
+        haber_ozet = haber_uygula(analiz, self.haber)
+
         # Canlı bot: yeni sinyallere gir, açık pozisyonları yönet
         self.durum = "Canlı bot pozisyonları güncelliyor"
         try:
-            self.canli.tik(analiz, acik, self.bist_p)
+            self.canli.tik(analiz, acik, self.bist_p, bist["d"] if bist else None)
         except Exception as e:  # noqa: BLE001
             self.hata = f"Bot: {type(e).__name__}: {e}"
 
@@ -3068,12 +3526,25 @@ class Servis:
                 continue
             ana = next(analiz[m][h] for m in ("g", "w", "5", "1") if h in analiz[m])
             kayit = dict(s=h, sek=sektor_bul(h), lik=_r(ana["likidite"], 1), hizli=h in hizli)
+            oz = haber_ozet.get(h)
+            if oz:
+                kayit["hb"] = dict(skor=oz["skor"], l=oz["liste"][:6])
             for mod in MODLAR:
                 a = analiz[mod].get(h)
                 kayit[mod] = mod_json(a, self.derin_sin[mod].get(h)) if a else None
             hisseler.append(kayit)
         akis = akis_olaylari(analiz)
+        simdi_t = time.time()
+        for h, oz in haber_ozet.items():          # önemli haberler canlı akışa
+            for hb in (oz or {}).get("liste", [])[:3]:
+                if abs(hb["p"]) >= 2 and simdi_t - hb["t"] <= 24 * 3600:
+                    akis.append(dict(t=hb["t"] + 3 * 3600, s=h, mod="g", tip="HABER", metin=hb["b"], fiyat=analiz["g"][h]["fiyat"] if h in analiz["g"] else None,
+                                     alt=("Olumlu haber" if hb["p"] > 0 else "Olumsuz haber") + (f" · {hb['k']}" if hb["k"] else ""), p=hb["p"],
+                                     u=hb["u"], id=f"{h}-hb-{hb['t']}"))
+        akis.sort(key=lambda x: -x["t"])
         paket = dict(hisseler=hisseler, akis=akis, vade=VADE, dilim=DILIM_ADI, bist=bist, sektorler=sektor_ozeti(analiz["g"]), karne=self.karne, bot=self.bot,
+                     haber_durum=dict(son=f"{dt.datetime.fromtimestamp(self.haber.son_basari, TZ):%H:%M}" if self.haber.son_basari else None,
+                                      hata=self.haber.hata, adet=sum(1 for v in haber_ozet.values() if v)),
                      adapt={m: {k: ADAPT[m].get(k) for k in ("n", "notlar", "dagilim", "stop_ek", "kirilim_min")} for m in MODLAR}, neden_adi=NEDEN_ADI,
                      model={m: (None if not MODEL[m] else {k: MODEL[m].get(k) for k in ("aktif", "n", "auc", "oran", "onemli", "neden")}) for m in MODLAR},
                      seans=acik, guncelleme=f"{dt.datetime.now(TZ):%H:%M}", taranan=len(TUM_HISSELER),
@@ -3085,7 +3556,7 @@ class Servis:
 
 
 @st.cache_resource
-def servis_al_v4(surum: str = "zeki-1") -> Servis:
+def servis_al_v5(surum: str = "haber-1") -> Servis:
     # Ad ve sürüm değişince Streamlit önceki app.py'den kalan eski servisi kullanmaz
     return Servis()
 
@@ -3126,10 +3597,10 @@ iframe {height:100dvh !important; display:block; border:0}
 div[data-testid="stVerticalBlock"] {gap:0 !important}
 </style>""", unsafe_allow_html=True)
 
-servis = servis_al_v4()
-if not hasattr(servis, "canli") or not hasattr(servis.canli, "depo"):   # önbellekte eski sürüm kalmışsa yeniden kur
+servis = servis_al_v5()
+if not hasattr(servis, "canli") or not hasattr(servis.canli, "depo") or not hasattr(servis, "haber"):   # önbellekte eski sürüm kalmışsa yeniden kur
     st.cache_resource.clear()
-    servis = servis_al_v4()
+    servis = servis_al_v5()
 
 mesaj = None
 try:
