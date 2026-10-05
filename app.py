@@ -88,7 +88,8 @@ HIZLI_EVREN = 60            # 1 ve 5 dakikalık analiz için en likit hisse say�
 MIN_LIKIDITE = 20            # milyon TL; daha sığ hisseler hiç taranmaz (ayar uygulamada ayrıca filtrelenir)
 AGIRLIK = {"1": {}, "5": {}, "g": {}, "w": {}}  # kurulum karnesine göre otomatik güven düzeltmesi (arka planda güncellenir)
 KURULUM_ADI = {"dk": "Direnç kırılımı", "dsk": "Destek kırılımı", "dd": "Destekten dönüş", "rd": "Dirençten dönüş",
-               "sweep": "Stop avı + dönüş", "emilim": "Emilim", "yapi": "Yapı kırılımı / CHoCH"}
+               "sweep": "Stop avı + dönüş", "emilim": "Emilim", "yapi": "Yapı kırılımı / CHoCH",
+               "uyum": "RSI uyumsuzluğu + onay mumu"}
 SEKTOR_LISTE = {
     "Banka": "AKBNK GARAN ISCTR YKBNK VAKBN HALKB TSKB SKBNK ALBRK QNBTR ICBCT KLNMA",
     "Sigorta & Finans": "AKGRT ANSGR TURSG AGESA ANHYT RAYSG GEDIK ISMEN INFO OSMEN ISFIN GARFA VAKFN SEKFK CRDFA LIDFA ULUFA",
@@ -208,6 +209,14 @@ def gostergeler(df: pd.DataFrame) -> pd.DataFrame:
     df["BBu"], df["BBa"] = orta + 2 * sd, orta - 2 * sd
     df["BBw"] = (df["BBu"] - df["BBa"]) / orta
     df["BBwMin"] = df["BBw"].rolling(60, min_periods=20).min()
+    # ADX / DI: trendin gücü ve yönü
+    yuk, asg = h.diff(), -l.diff()
+    pdm = pd.Series(np.where((yuk > asg) & (yuk > 0), yuk, 0.0), index=df.index)
+    ndm = pd.Series(np.where((asg > yuk) & (asg > 0), asg, 0.0), index=df.index)
+    df["PDI"] = 100 * pdm.ewm(alpha=1 / 14, adjust=False).mean() / df["ATR"].replace(0, np.nan)
+    df["NDI"] = 100 * ndm.ewm(alpha=1 / 14, adjust=False).mean() / df["ATR"].replace(0, np.nan)
+    dx = 100 * (df["PDI"] - df["NDI"]).abs() / (df["PDI"] + df["NDI"]).replace(0, np.nan)
+    df["ADX"] = dx.ewm(alpha=1 / 14, adjust=False).mean()
     # Gün içi VWAP (her gün sıfırlanır)
     gun = df.index.date
     tp = (h + l + c) / 3
@@ -232,34 +241,96 @@ def gostergeler(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------- Tepe / dip, seviyeler, hacim profili ----------
-def pivot_bul(df: pd.DataFrame) -> list[tuple]:
-    w = 2 * PIVOT_PENCERE + 1
+def pivot_bul(df: pd.DataFrame, P: int | None = None) -> list[tuple]:
+    """Belirgin tepe/dipler: sağ-sol PIVOT_PENCERE mumun en yükseği/düşüğü VE en az ~0,8 ATR'lik salınım.
+    Küçük titreşimler seviye sayılmaz (eski sürümde her minik dalga seviye oluyordu)."""
+    P = P or PIVOT_PENCERE
+    w = 2 * P + 1
     hm = df["High"].rolling(w, center=True).max().values
     lm = df["Low"].rolling(w, center=True).min().values
     H, L = df["High"].values, df["Low"].values
+    atr = df["ATR"].values if "ATR" in df else (df["High"] - df["Low"]).rolling(14).mean().values
     pv = []
     for j in range(len(df)):
+        a = atr[j] if not np.isnan(atr[j]) else (H[j] - L[j])
         if not np.isnan(hm[j]) and H[j] == hm[j]:
-            pv.append((j, float(H[j]), "H"))
+            sol, sag = L[max(0, j - 3 * P):j + 1].min(), L[j:j + P + 1].min()
+            if H[j] - max(sol, sag) >= 0.8 * a:
+                pv.append((j, float(H[j]), "H"))
         if not np.isnan(lm[j]) and L[j] == lm[j]:
-            pv.append((j, float(L[j]), "L"))
+            sol, sag = H[max(0, j - 3 * P):j + 1].max(), H[j:j + P + 1].max()
+            if min(sol, sag) - L[j] >= 0.8 * a:
+                pv.append((j, float(L[j]), "L"))
     return pv
 
 
-def seviyeler_bul(pv: list[tuple]) -> list[float]:
+def seviye_kumeleri(pv: list[tuple], son_j: int, tol: float, kaynak: str = "tepe-dip", ufuk: int = 400) -> list[dict]:
+    """Tepe/dipleri fiyat yakınlığına göre kümeler ve her seviyeye 0-1 güç puanı verir.
+    Güç: temas sayısı + tazelik + rol değişimi (eski direncin desteğe dönmesi ya da tersi)."""
     if not pv:
         return []
-    fiyatlar = sorted(p[1] for p in pv)
-    gruplar = [[fiyatlar[0], 1]]  # [toplam, adet]
-    for f in fiyatlar[1:]:
-        m = gruplar[-1][0] / gruplar[-1][1]
-        if abs(f - m) / m <= SEVIYE_TOLERANS:
-            gruplar[-1][0] += f
-            gruplar[-1][1] += 1
+    sirali = sorted(pv, key=lambda p: p[1])
+    gruplar = [[sirali[0]]]
+    for p in sirali[1:]:
+        m = sum(x[1] for x in gruplar[-1]) / len(gruplar[-1])
+        if abs(p[1] - m) / m <= tol:
+            gruplar[-1].append(p)
         else:
-            gruplar.append([f, 1])
-    guclu = [t / a for t, a in gruplar if a >= 2]
-    return guclu if guclu else [t / a for t, a in gruplar]
+            gruplar.append([p])
+    out = []
+    for g in gruplar:
+        temas = len(g)
+        son = max(x[0] for x in g)
+        tazelik = max(0.0, 1 - (son_j - son) / ufuk)
+        rol = len({x[2] for x in g}) == 2
+        guc = min(1.0, 0.2 * min(temas, 4) + 0.3 * tazelik + (0.15 if rol else 0))
+        out.append(dict(p=float(sum(x[1] for x in g) / temas), temas=temas, son=son, guc=round(guc, 3), rol=rol, kaynak=kaynak))
+    return out
+
+
+def seviyeler_bul(pv: list[tuple], tol: float = SEVIYE_TOLERANS) -> list[float]:
+    """Geriye uyumluluk: sadece güçlü seviyelerin fiyatları."""
+    if not pv:
+        return []
+    son_j = max(p[0] for p in pv)
+    return [d["p"] for d in seviye_kumeleri(pv, son_j, tol) if d["temas"] >= 2 or d["guc"] >= 0.5]
+
+
+def seviye_listesi(ctx: dict, i: int, pv: list[tuple]) -> list[dict]:
+    """i. mumda geçerli olan tüm güçlü seviyeler: grafik tepe-dipleri + son salınım + günlük grafik + hacim profili.
+    Sadece i'ye kadar bilinen veri kullanılır."""
+    anahtar = (len(pv), int(ctx["gun_no"][i]))
+    onb = ctx.setdefault("sev_onbellek", {})
+    if anahtar in onb:
+        return onb[anahtar]
+    tol = ctx["tol"]
+    sev = [d for d in seviye_kumeleri(pv, i, tol) if d["temas"] >= 2 or d["guc"] >= 0.5]
+    for tip, ad in (("H", "son tepe"), ("L", "son dip")):        # en son salınım tepesi/dibi tek temasla da önemlidir
+        son = [p for p in pv if p[2] == tip]
+        if son:
+            j, f, _ = son[-1]
+            sev.append(dict(p=f, temas=1, son=j, guc=0.45, rol=False, kaynak=ad))
+    sev += ctx["gun_sev"](i)
+    prof = ctx["prof"].get(ctx["gun_no"][i])
+    if prof:
+        sev.append(dict(p=prof["poc"], temas=0, son=i, guc=0.6, rol=False, kaynak="hacim (POC)"))
+        sev.append(dict(p=prof["vah"], temas=0, son=i, guc=0.4, rol=False, kaynak="hacim (VAH)"))
+        sev.append(dict(p=prof["val"], temas=0, son=i, guc=0.4, rol=False, kaynak="hacim (VAL)"))
+    sev.sort(key=lambda d: d["p"])
+    birlesik = []
+    for d in sev:                                                    # birbirine çok yakın seviyeler tek seviye olur
+        if birlesik and abs(d["p"] - birlesik[-1]["p"]) / birlesik[-1]["p"] <= tol:
+            e = birlesik[-1]
+            ana, yan = (e, d) if e["guc"] >= d["guc"] else (d, e)
+            yeni = dict(ana)
+            yeni["guc"] = round(min(1.0, ana["guc"] + 0.08), 3)
+            yeni["temas"] = ana["temas"] + yan["temas"]
+            yeni["kaynak"] = ana["kaynak"] if yan["kaynak"] == ana["kaynak"] else ana["kaynak"] + " + " + yan["kaynak"]
+            birlesik[-1] = yeni
+        else:
+            birlesik.append(d)
+    onb[anahtar] = birlesik
+    return birlesik
 
 
 def hacim_profili(H, L, V, bins: int = 40):
@@ -298,6 +369,67 @@ def bolge_gucu(prof, fiyat) -> float:
     return float(prof["hist"][max(k - 1, 0):k + 2].max())
 
 
+# ---------- Mum formasyonları ve uyumsuzluk ----------
+def mum_formasyon(A: dict, i: int) -> list[tuple]:
+    """Son mumdaki mum formasyonları: (ad, yön, puan). Yön 0 = kararsızlık."""
+    if i < 5:
+        return []
+    O, Hh, Ll, C = A["Open"], A["High"], A["Low"], A["Close"]
+    o, h, l, c = O[i], Hh[i], Ll[i], C[i]
+    o1, h1, l1, c1 = O[i - 1], Hh[i - 1], Ll[i - 1], C[i - 1]
+    atr = nanv(A["ATR"][i], c * 0.01)
+    govde, aralik = abs(c - o), max(h - l, 1e-9)
+    ust, alt = h - max(o, c), min(o, c) - l
+    g1 = abs(c1 - o1)
+    dusus, yukselis = C[i - 1] < C[i - 5], C[i - 1] > C[i - 5]
+    out = []
+    if c > o and c1 < o1 and c >= o1 and o <= c1 and govde > g1 and govde >= 0.3 * atr:
+        out.append(("Yutan boğa", 1, 10))
+    if c < o and c1 > o1 and c <= o1 and o >= c1 and govde > g1 and govde >= 0.3 * atr:
+        out.append(("Yutan ayı", -1, 10))
+    if alt >= 2 * govde and ust <= 0.25 * aralik and aralik >= 0.6 * atr and dusus:
+        out.append(("Çekiç", 1, 8))
+    if ust >= 2 * govde and alt <= 0.25 * aralik and aralik >= 0.6 * atr and yukselis:
+        out.append(("Kayan yıldız", -1, 8))
+    if ust >= 2 * govde and alt <= 0.25 * aralik and aralik >= 0.6 * atr and dusus:
+        out.append(("Ters çekiç", 1, 4))
+    if alt >= 2 * govde and ust <= 0.25 * aralik and aralik >= 0.6 * atr and yukselis:
+        out.append(("Asılı adam", -1, 4))
+    o2, c2 = O[i - 2], C[i - 2]
+    g2 = abs(c2 - o2)
+    if c2 < o2 and g2 >= 0.6 * atr and g1 <= 0.35 * g2 and c > o and c > (o2 + c2) / 2:
+        out.append(("Sabah yıldızı", 1, 10))
+    if c2 > o2 and g2 >= 0.6 * atr and g1 <= 0.35 * g2 and c < o and c < (o2 + c2) / 2:
+        out.append(("Akşam yıldızı", -1, 10))
+    son3 = range(i - 2, i + 1)
+    if all(C[k] > O[k] and abs(C[k] - O[k]) >= 0.5 * atr and Hh[k] - C[k] <= 0.3 * (Hh[k] - Ll[k]) for k in son3) and C[i] > C[i - 1] > C[i - 2]:
+        out.append(("Üç beyaz asker", 1, 8))
+    if all(C[k] < O[k] and abs(C[k] - O[k]) >= 0.5 * atr and C[k] - Ll[k] <= 0.3 * (Hh[k] - Ll[k]) for k in son3) and C[i] < C[i - 1] < C[i - 2]:
+        out.append(("Üç kara karga", -1, 8))
+    if g1 >= 0.8 * atr and govde <= 0.4 * g1 and max(o, c) <= max(o1, c1) and min(o, c) >= min(o1, c1):
+        if c1 < o1 and c > o:
+            out.append(("Boğa harami", 1, 5))
+        elif c1 > o1 and c < o:
+            out.append(("Ayı harami", -1, 5))
+    if govde <= 0.1 * aralik and aralik >= 0.5 * atr:
+        out.append(("Doji (kararsızlık)", 0, 0))
+    if h <= h1 and l >= l1:
+        out.append(("İçeri mum (sıkışma)", 0, 0))
+    return out
+
+
+def uyumsuzluk(A: dict, pv: list[tuple], i: int) -> int:
+    """RSI uyumsuzluğu: fiyat daha düşük dip yaparken RSI daha yüksek dip (+1) ya da tersi (-1)."""
+    r = A["RSI"]
+    L = [p for p in pv if p[2] == "L" and p[0] >= i - 70][-2:]
+    H = [p for p in pv if p[2] == "H" and p[0] >= i - 70][-2:]
+    if len(L) == 2 and i - L[1][0] <= 14 and L[1][1] < L[0][1] and nanv(r[L[1][0]], 50) > nanv(r[L[0][0]], 50) + 3 and nanv(r[L[0][0]], 50) < 45:
+        return 1
+    if len(H) == 2 and i - H[1][0] <= 14 and H[1][1] > H[0][1] and nanv(r[H[1][0]], 50) < nanv(r[H[0][0]], 50) - 3 and nanv(r[H[0][0]], 50) > 55:
+        return -1
+    return 0
+
+
 # ---------- Formasyonlar ----------
 def _dogru(p1, p2, j):
     (j1, y1), (j2, y2) = p1, p2
@@ -310,13 +442,14 @@ def formasyonlar(A: dict, pv: list[tuple], i: int) -> list[dict]:
     H = [p for p in pv if p[2] == "H" and p[0] >= i - 120]
     L = [p for p in pv if p[2] == "L" and p[0] >= i - 120]
     sonuc = []
+    ftol = min(0.015, max(0.004, 1.0 * atr / c))   # "aynı seviye" sayılacak fark: hissenin oynaklığına göre
 
     def ekle(ad, yon, durum, cizgiler, hedef, ref):
         sonuc.append(dict(ad=ad, yon=yon, durum=durum, cizgiler=cizgiler, hedef=hedef, ref=ref))
 
     if len(L) >= 2:
         (j1, p1, _), (j2, p2, _) = L[-2], L[-1]
-        if j2 - j1 >= 8 and abs(p1 - p2) / p1 <= 0.015 and i - j2 <= 40:
+        if j2 - j1 >= 8 and abs(p1 - p2) / p1 <= ftol and i - j2 <= 40:
             jm = j1 + int(np.argmax(Hh[j1:j2 + 1]))
             boyun, dip = float(Hh[jm]), min(p1, p2)
             if boyun / max(p1, p2) - 1 >= 0.02 and np.min(Ll[j2 + 1:i], initial=np.inf) >= dip * 0.99:
@@ -326,7 +459,7 @@ def formasyonlar(A: dict, pv: list[tuple], i: int) -> list[dict]:
                          boyun + (boyun - dip), boyun)
     if len(H) >= 2:
         (j1, p1, _), (j2, p2, _) = H[-2], H[-1]
-        if j2 - j1 >= 8 and abs(p1 - p2) / p1 <= 0.015 and i - j2 <= 40:
+        if j2 - j1 >= 8 and abs(p1 - p2) / p1 <= ftol and i - j2 <= 40:
             jm = j1 + int(np.argmin(Ll[j1:j2 + 1]))
             boyun, tepe = float(Ll[jm]), max(p1, p2)
             if 1 - boyun / min(p1, p2) >= 0.02 and np.max(Hh[j2 + 1:i], initial=-np.inf) <= tepe * 1.01:
@@ -366,20 +499,32 @@ def formasyonlar(A: dict, pv: list[tuple], i: int) -> list[dict]:
         sl, bl = np.polyfit(lx, ly, 1)
         ort = (hy.mean() + ly.mean()) / 2
         nh, nl, F = sh / ort, sl / ort, 0.0004
-        tip = None
-        if abs(nh) < F and nl > F:
-            tip = ("Yükselen üçgen", 1)
-        elif abs(nl) < F and nh < -F:
-            tip = ("Alçalan üçgen", -1)
-        elif nh < -F and nl > F:
-            tip = ("Simetrik üçgen", 0)
-        if not tip:
-            continue
         j0 = int(min(hx[0], lx[0]))
         ust = lambda j: sh * j + bh  # noqa: E731
         alt = lambda j: sl * j + bl  # noqa: E731
         gen0, gen = ust(j0) - alt(j0), ust(i) - alt(i)
-        if 0 < gen < gen0 and alt(i - 1) * 0.997 <= cp <= ust(i - 1) * 1.003:
+        daralan = 0 < gen < gen0 * 0.85
+        paralel = gen0 > 0 and abs(gen - gen0) <= 0.25 * gen0
+        tip = None
+        if daralan and abs(nh) < F and nl > F:
+            tip = ("Yükselen üçgen", 1)
+        elif daralan and abs(nl) < F and nh < -F:
+            tip = ("Alçalan üçgen", -1)
+        elif daralan and nh < -F and nl > F:
+            tip = ("Simetrik üçgen", 0)
+        elif daralan and nh > F and nl > nh * 1.15:
+            tip = ("Yükselen kama", -1)
+        elif daralan and nl < -F and nh < nl * 1.15:
+            tip = ("Düşen kama", 1)
+        elif paralel and nh > F and nl > F:
+            tip = ("Yükselen kanal", 0)
+        elif paralel and nh < -F and nl < -F:
+            tip = ("Düşen kanal", 0)
+        elif paralel and abs(nh) < F and abs(nl) < F and gen <= 8 * atr:
+            tip = ("Dikdörtgen (yatay bant)", 0)
+        if not tip:
+            continue
+        if gen > 0 and alt(i - 1) * 0.997 <= cp <= ust(i - 1) * 1.003:
             if c > ust(i) * 1.002:
                 durum, yon, hedef, ref = "kırıldı", 1, c + gen0, ust(i)
             elif c < alt(i) * 0.998:
@@ -388,6 +533,43 @@ def formasyonlar(A: dict, pv: list[tuple], i: int) -> list[dict]:
                 durum, yon, hedef, ref = "oluşuyor", tip[1], None, ust(i) if tip[1] >= 0 else alt(i)
             ekle(tip[0], yon, durum, [(j0, ust(j0), i, ust(i)), (j0, alt(j0), i, alt(i))], hedef, ref)
             break
+    if len(L) >= 3:   # üçlü dip
+        (a, la, _), (b, lb, _), (d, ld, _) = L[-3:]
+        dipler = (la, lb, ld)
+        if max(dipler) / min(dipler) - 1 <= ftol and b - a >= 6 and d - b >= 6 and i - d <= 40:
+            boyun = float(Hh[a:d + 1].max())
+            if boyun / max(dipler) - 1 >= 0.02:
+                durum = "kırıldı" if c > boyun >= cp else ("oluşuyor" if c <= boyun else None)
+                if durum:
+                    ekle("Üçlü dip", 1, durum, [(a, la, b, lb), (b, lb, d, ld), (a, boyun, i, boyun)], boyun + (boyun - min(dipler)), boyun)
+    if len(H) >= 3:   # üçlü tepe
+        (a, ha, _), (b, hb, _), (d, hd, _) = H[-3:]
+        tepeler = (ha, hb, hd)
+        if max(tepeler) / min(tepeler) - 1 <= ftol and b - a >= 6 and d - b >= 6 and i - d <= 40:
+            boyun = float(Ll[a:d + 1].min())
+            if 1 - boyun / min(tepeler) >= 0.02:
+                durum = "kırıldı" if c < boyun <= cp else ("oluşuyor" if c >= boyun else None)
+                if durum:
+                    ekle("Üçlü tepe", -1, durum, [(a, ha, b, hb), (b, hb, d, hd), (a, boyun, i, boyun)], boyun - (max(tepeler) - boyun), boyun)
+    if i >= 60:       # fincan-kulp
+        bas = max(0, i - 120)
+        jl = bas + int(np.argmax(Hh[bas:i - 30]))
+        kenar_sol = float(Hh[jl])
+        if i - 5 > jl + 10:
+            jb = jl + int(np.argmin(Ll[jl:i - 5]))
+            dip = float(Ll[jb])
+            derinlik = kenar_sol - dip
+            if derinlik >= 5 * atr and derinlik / kenar_sol <= 0.35 and jb - jl >= 10 and i - 3 > jb + 5:
+                jr = jb + int(np.argmax(Hh[jb:i - 2]))
+                kenar_sag = float(Hh[jr])
+                kulp_dip = float(Ll[jr:i].min()) if i > jr else kenar_sag
+                if (kenar_sag >= kenar_sol * 0.97 and jr - jb >= 0.5 * (jb - jl) and 3 <= i - jr <= 30
+                        and kulp_dip >= dip + 0.6 * derinlik):
+                    kenar = max(kenar_sol, kenar_sag)
+                    durum = "kırıldı" if c > kenar >= cp else ("oluşuyor" if c <= kenar else None)
+                    if durum:
+                        ekle("Fincan-kulp", 1, durum, [(jl, kenar_sol, jb, dip), (jb, dip, jr, kenar_sag), (jr, kenar_sag, i, kulp_dip), (jl, kenar, i, kenar)],
+                             kenar + derinlik, kenar)
     esik = max(0.03, 4 * atr / c)
     for m in range(5, 16):
         s, p0 = i - m, i - m - 10
@@ -462,8 +644,42 @@ def baglam_kur(df15: pd.DataFrame, gunluk: pd.DataFrame | None, xu15: pd.DataFra
         geri = {"1": 390, "5": 160, "g": 160, "w": 20}[mod]
         rs = ((df["Close"] / df["Close"].shift(geri) - 1) - (xc / xc.shift(geri) - 1)).fillna(0).values * 100
 
+    # Seviye toleransı: hissenin oynaklığına göre (sakin hissede dar, oynakta geniş)
+    atr_oran = np.nanmedian(A["ATR"][max(0, n - 300):n] / A["Close"][max(0, n - 300):n]) if n > 20 else 0.01
+    tol = float(np.clip(0.6 * atr_oran, 0.003, 0.02))
+
+    # Günlük grafiğin ana tepe/dipleri (gün içi modlarda üst zaman dilimi seviyesi); sadece o güne kadar bilinenler
+    gun_pv = []
+    if mod != "w" and gunluk is not None and len(gunluk) > 40:
+        g = gunluk.copy()
+        g["ATR"] = (pd.concat([g["High"] - g["Low"], (g["High"] - g["Close"].shift()).abs(), (g["Low"] - g["Close"].shift()).abs()], axis=1)
+                    .max(axis=1).ewm(alpha=1 / 14, adjust=False).mean())
+        P0 = 3
+        gp = pivot_bul(g, P0)
+        gidx = g.index
+        gun_pv = [(gidx[min(j + P0, len(gidx) - 1)].date(), j, f, t) for j, f, t in gp if j + P0 < len(gidx)]
+    tarih_dizi = np.array(df.index.date)
+    gun_onb = {}
+
+    def gun_sev(i):
+        if not gun_pv:
+            return []
+        t = tarih_dizi[i]
+        if t not in gun_onb:
+            bilinen = [(j, f, tp) for (onay, j, f, tp) in gun_pv if onay < t][-60:]
+            out = []
+            if bilinen:
+                son_j = bilinen[-1][0] + 3
+                for d in seviye_kumeleri(bilinen, son_j, max(tol, 0.006), "günlük", ufuk=120):
+                    d = dict(d)
+                    d["guc"] = round(min(1.0, d["guc"] + 0.1), 3)
+                    d["son"] = 0
+                    out.append(d)
+            gun_onb[t] = [d for d in out if d["temas"] >= 2 or d["guc"] >= 0.55]
+        return gun_onb[t]
+
     return dict(df=df, A=A, n=n, pv=pv, pv_j=[p[0] for p in pv], gun_no=gun_no, prof=prof,
-                prof_guncel=prof_guncel, htf=htf, py=py, rs=rs, mod=mod)
+                prof_guncel=prof_guncel, htf=htf, py=py, rs=rs, mod=mod, tol=tol, gun_sev=gun_sev)
 
 
 def yapi_bul(pv):
@@ -479,19 +695,28 @@ def yapi_bul(pv):
 
 
 # ---------- Puanlama ----------
-def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, pv) -> dict:
+OZ_ADI = ["Olay gücü", "Trend uyumu", "Günlük trend", "VWAP tarafı", "Alıcı/satıcı baskısı", "Göreli hacim", "Hacimli bölge",
+          "CVD uyumsuzluğu", "MACD", "RSI konumu", "Sıkışmadan çıkış", "BIST100 yönü", "Endekse göre güç", "Risk/kazanç",
+          "Ortalamadan uzaklık", "Önündeki engel mesafesi", "ADX trend gücü", "Mum formasyonu", "RSI uyumsuzluğu", "Seviye gücü",
+          "Israrcı alıcı/satıcı", "Kırılım türü"]
+
+
+def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, pv, ex=None) -> dict:
+    ex = ex or {}
     A = ctx["A"]
     c, atr = A["Close"][i], nanv(A["ATR"][i], A["Close"][i] * 0.01)
     puan, arti, eksi = olay, [], []
     yukari = yon > 0
     yonlu = lambda x: x * yon  # noqa: E731
+    f = {}
 
-    # Trend (15 dk) ve günlük trend
+    # Trend ve günlük trend
     ema50, ema200 = A["EMA50"][i], A["EMA200"][i]
+    f["trend"] = 0
     if yonlu(ema50 - ema200) > 0 and yonlu(c - ema50) > 0:
-        puan += 8; arti.append(DILIM_ADI[ctx["mod"]] + " trend " + ("yukarı" if yukari else "aşağı"))
+        puan += 8; arti.append(DILIM_ADI[ctx["mod"]] + " trend " + ("yukarı" if yukari else "aşağı")); f["trend"] = 1
     elif yonlu(ema50 - ema200) < 0:
-        puan -= 6; eksi.append(DILIM_ADI[ctx["mod"]] + " trende karşı")
+        puan -= 6; eksi.append(DILIM_ADI[ctx["mod"]] + " trende karşı"); f["trend"] = -1
     htf = ctx["htf"][i]
     if htf * yon > 0:
         puan += 10; arti.append("Günlük trend onaylıyor")
@@ -500,11 +725,12 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
 
     # VWAP
     vw = A["VWAP"][i]
+    f["vwap"] = 0
     if not np.isnan(vw):
         if yonlu(c - vw) > 0:
-            puan += 7; arti.append("Fiyat VWAP'ın " + ("üstünde" if yukari else "altında"))
+            puan += 7; arti.append("Fiyat VWAP'ın " + ("üstünde" if yukari else "altında")); f["vwap"] = 1
         else:
-            puan -= 5; eksi.append("Fiyat VWAP'ın " + ("altında" if yukari else "üstünde"))
+            puan -= 5; eksi.append("Fiyat VWAP'ın " + ("altında" if yukari else "üstünde")); f["vwap"] = -1
 
     # Alıcı / satıcı baskısı
     ab = nanv(A["AB"][i])
@@ -529,20 +755,21 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
     elif rv < 0.8:
         puan -= 10; eksi.append(f"Hacim zayıf ({sayi(rv, 1)}x)")
 
-    # Hacimli bölge (gerçek alıcı/satıcı yığılması)
+    # Hacimli bölge
     yogun = max(bolge_gucu(prof, ref), bolge_gucu(prof, c))
     hacimli_bolge = yogun >= 0.6
     if hacimli_bolge:
         puan += 8; arti.append("Yüksek hacimli fiyat bölgesi")
 
-    # CVD uyumsuzluğu (fiyat yeni dip/tepe yaparken hacim akışı tersini gösteriyor)
+    # CVD uyumsuzluğu
+    f["cvd"] = 0
     if i >= 40:
         C, cvd = A["Close"], A["CVD"]
         a1, a2 = slice(i - 40, i - 20), slice(i - 20, i + 1)
         if yukari and C[a2].min() < C[a1].min() and cvd[a2].min() > cvd[a1].min():
-            puan += 8; arti.append("Gizli alım (CVD uyumsuzluğu)")
+            puan += 8; arti.append("Gizli alım (CVD uyumsuzluğu)"); f["cvd"] = 1
         if not yukari and C[a2].max() > C[a1].max() and cvd[a2].max() < cvd[a1].max():
-            puan += 8; arti.append("Gizli satış (CVD uyumsuzluğu)")
+            puan += 8; arti.append("Gizli satış (CVD uyumsuzluğu)"); f["cvd"] = 1
 
     # Momentum
     mh, mh1 = nanv(A["MACDh"][i]), nanv(A["MACDh"][i - 1])
@@ -557,10 +784,11 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
         puan -= 12; eksi.append(f"RSI aşırı alımda ({r:.0f})")
     elif not yukari and r < 26:
         puan -= 12; eksi.append(f"RSI aşırı satımda ({r:.0f})")
+    f["sikisma"] = 0
     bw1, bwmin = A["BBw"][i - 1], A["BBwMin"][i - 1]
     if not np.isnan(bw1) and not np.isnan(bwmin) and bw1 <= bwmin * 1.1:
         if (yukari and c > A["BBu"][i]) or (not yukari and c < A["BBa"][i]):
-            puan += 5; arti.append("Sıkışmadan çıkış")
+            puan += 5; arti.append("Sıkışmadan çıkış"); f["sikisma"] = 1
 
     # Piyasa ve göreli güç
     if ctx["py"][i] * yon > 0:
@@ -573,15 +801,55 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
     elif yonlu(rs) < -2:
         puan -= 5; eksi.append(f"Endeksten {'zayıf' if yukari else 'güçlü'} (%{'+' if rs >= 0 else '−'}{sayi(abs(rs), 1)})")
 
-    # "Israrcı" bonus: alıcılar hacimli bölgede gerçekten iş başında
     guclu = hacimli_bolge and rv >= 1.5 and yonlu(ab) > 0.2
     if guclu:
         puan += 10
 
-    # Stop: yapının (son dip/tepe) arkası; hedef: sıradaki seviye, en az 1.5R
+    # ADX: trend gücü
+    adx = nanv(A["ADX"][i], 20)
+    trend_yon = 1 if nanv(A["PDI"][i]) >= nanv(A["NDI"][i]) else -1
+    kirilim = ex.get("kirilim", True)
+    if kirilim:
+        if adx >= 25 and trend_yon == yon:
+            puan += 6; arti.append(f"Güçlü trend (ADX {adx:.0f})")
+        elif adx < 18:
+            puan -= 4; eksi.append(f"Trend zayıf (ADX {adx:.0f}), kırılım sönebilir")
+    elif adx >= 35 and trend_yon == -yon:
+        puan -= 10; eksi.append(f"Güçlü trende karşı dönüş denemesi (ADX {adx:.0f})")
+
+    # Kovalama: fiyat ortalamadan çok uzaklaşmışsa girmek risklidir
+    uzak = yonlu(c - nanv(A["EMA20"][i], c)) / atr
+    if uzak > 2.8:
+        puan -= 14; eksi.append(f"Fiyat ortalamadan çok uzak ({sayi(uzak, 1)} ATR) — kovalama riski")
+    elif uzak > 2:
+        puan -= 6; eksi.append(f"Fiyat ortalamadan uzaklaşmış ({sayi(uzak, 1)} ATR)")
+
+    # Mum formasyonu ve RSI uyumsuzluğu
+    mum_skor = 0
+    for ad, y, g in ex.get("mum", []):
+        if y == yon:
+            puan += g; mum_skor += g; arti.append(f"Mum: {ad}")
+        elif y == -yon and g:
+            puan -= int(g * 0.8); mum_skor -= g; eksi.append(f"Ters mum: {ad}")
+    uyum = ex.get("uyum", 0)
+    if uyum == yon:
+        puan += 10; arti.append("RSI " + ("pozitif" if yukari else "negatif") + " uyumsuzluk")
+    elif uyum == -yon:
+        puan -= 8; eksi.append("RSI " + ("negatif" if yukari else "pozitif") + " uyumsuzluk (ters)")
+
+    # Seviyenin gücü
+    ref_guc = ex.get("ref_guc", 0.5)
+    if ref_guc >= 0.75:
+        puan += 6; arti.append(f"Güçlü seviye ({ex.get('ref_aciklama', '')})")
+    elif ref_guc < 0.35:
+        puan -= 6; eksi.append("Zayıf seviye")
+
+    # Stop ve hedefler: güçlü seviyelere göre
+    sev_d = ex.get("sev_d") or [dict(p=x, guc=0.5) for x in sev]
+    guclu_sev = sorted({round(d["p"], 4) for d in sev_d if d["guc"] >= 0.45})
     dipler = [p[1] for p in pv[-12:] if p[2] == "L" and p[1] < c]
     tepeler = [p[1] for p in pv[-12:] if p[2] == "H" and p[1] > c]
-    tum_sev = sorted(set([round(x, 4) for x in sev] + ([prof["poc"], prof["vah"], prof["val"]] + prof["hvn"] if prof else [])))
+    tum_sev = sorted(set(guclu_sev + ([prof["poc"], prof["vah"], prof["val"]] + prof["hvn"] if prof else [])))
     if yukari:
         aday = ref - 0.5 * atr
         if dipler:
@@ -596,6 +864,7 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
             hedef = min(hedef, hedef_ozel) if ustler else hedef_ozel
         sonra = [x for x in tum_sev if x > hedef * 1.003]
         hedef2 = sonra[0] if sonra else hedef + R
+        engel = next((d["p"] for d in sorted(sev_d, key=lambda d: d["p"]) if d["guc"] >= 0.5 and c + 0.3 * atr < d["p"] < hedef), None)
     else:
         aday = ref + 0.5 * atr
         if tepeler:
@@ -610,13 +879,20 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
             hedef = max(hedef, hedef_ozel) if altlar else hedef_ozel
         sonra = [x for x in tum_sev if x < hedef * 0.997]
         hedef2 = sonra[-1] if sonra else hedef - R
+        engel = next((d["p"] for d in sorted(sev_d, key=lambda d: -d["p"]) if d["guc"] >= 0.5 and hedef < d["p"] < c - 0.3 * atr), None)
+    engel_oran = 3.0
+    if engel is not None and R > 0:
+        engel_oran = abs(engel - c) / R
+        if engel_oran < 1.2:
+            puan -= 14; eksi.append(f"Hemen {'üstte güçlü direnç' if yukari else 'altta güçlü destek'} ({sayi(engel)}) — yer dar")
+        elif engel_oran < 1.5:
+            puan -= 5; eksi.append(f"Yakında {'direnç' if yukari else 'destek'} var ({sayi(engel)})")
     rk = abs(hedef - c) / R if R > 0 else 0
     if rk >= 2.5:
         puan += 5; arti.append(f"Risk/kazanç {sayi(rk, 1)}")
     elif rk < 1.5:
         puan -= 8; eksi.append(f"Risk/kazanç düşük ({sayi(rk, 1)})")
 
-    # Giriş aralığı: kovalamadan, geri çekilmede kademeli giriş bölgesi
     if yukari:
         giris_ust = c + 0.15 * atr
         giris_alt = max(c - 0.5 * atr, (stop + c) / 2)
@@ -628,85 +904,109 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
         sonra3 = [x for x in tum_sev if x < hedef2 * 0.997]
         hedef3 = sonra3[-1] if sonra3 else hedef2 - R
 
-    guven = int(round(100 / (1 + np.exp(-(puan - 58) / 11))))  # ham puan 58 -> 50, 80 -> 88, 95 -> 97
+    oz = [round(float(v), 4) for v in (
+        olay / 40, f["trend"], htf * yon, f["vwap"], ab * yon, min(rv, 4) / 4, int(hacimli_bolge), f["cvd"],
+        np.sign(mh) * yon, (r - 50) / 50 * yon, f["sikisma"], ctx["py"][i] * yon, float(np.clip(rs * yon, -10, 10)) / 10,
+        min(rk, 5) / 5, float(np.clip(uzak, -4, 6)) / 4, min(engel_oran, 3) / 3, adx / 50 * (1 if trend_yon == yon else -1),
+        float(np.clip(mum_skor, -10, 10)) / 10, uyum * yon, ref_guc, int(guclu), int(kirilim))]
+    guven = int(round(100 / (1 + np.exp(-(puan - 58) / 11))))
     return dict(tur="AL" if yukari else "SAT", yon=yon, guven=guven, guclu=bool(guclu),
                 sebepler=sebepler, arti=arti, eksi=eksi, fiyat=float(c), stop=float(stop),
                 hedef=float(hedef), hedef2=float(hedef2), hedef3=float(hedef3), rk=float(rk),
-                giris_alt=float(giris_alt), giris_ust=float(giris_ust))
+                giris_alt=float(giris_alt), giris_ust=float(giris_ust), oz=oz)
 
 
 def sinyal_bul(ctx, i):
-    """i. mum kapanışında sinyal var mı? Sadece i'ye kadarki veri kullanılır."""
+    """i. mum kapanışında sinyal var mı? Sadece i'ye kadarki veri kullanılır.
+    Sinyal sadece GÜÇLÜ seviyelerde, onaylı kırılım ya da onay mumlu dönüşte üretilir."""
     A = ctx["A"]
     pv = ctx["pv"][:bisect.bisect_right(ctx["pv_j"], i - PIVOT_PENCERE - 1)]
     if len(pv) < 4:
         return None, []
-    onbellek = ctx.setdefault("sev_onbellek", {})
-    if len(pv) not in onbellek:
-        onbellek[len(pv)] = seviyeler_bul(pv)
-    sev = onbellek[len(pv)]
+    sev_d = seviye_listesi(ctx, i, pv)
+    sev = [d["p"] for d in sev_d]
     prof = ctx["prof"].get(ctx["gun_no"][i])
-    profil_sev = [prof["poc"], prof["vah"], prof["val"]] if prof else []
     c, o, h, l, cp = A["Close"][i], A["Open"][i], A["High"][i], A["Low"][i], A["Close"][i - 1]
     atr = nanv(A["ATR"][i], c * 0.01)
     rv = nanv(A["RVOL"][i])
-    tol = SEVIYE_TOLERANS
+    tol = ctx["tol"]
     yesil, kirmizi = c > o, c < o
+    aralik = max(h - l, 1e-9)
+    govde_orani = abs(c - o) / aralik
+    mum = mum_formasyon(A, i)
+    mum_al = any(y > 0 for _, y, _ in mum)
+    mum_sat = any(y < 0 for _, y, _ in mum)
     olaylar = {}
 
-    def olay(anahtar, yon, puan, metin, seviye, hedef=None, stop=None):
+    def olay(anahtar, yon, puan, metin, seviye, hedef=None, stop=None, guc=0.5, aciklama="", kirilim=True):
         eski = olaylar.get(anahtar)
         if eski is None or abs(seviye - c) < abs(eski[3] - c):
-            olaylar[anahtar] = (yon, puan, metin, seviye, hedef, stop, anahtar)
+            olaylar[anahtar] = (yon, puan, metin, seviye, hedef, stop, anahtar, guc, aciklama, kirilim)
 
-    for L_ in sev + profil_sev:
-        ad = "profil" if L_ in profil_sev else "seviye"
-        if cp < L_ and c > L_ * (1 + tol / 2) and yesil and rv >= 1.0:
-            olay("dk", 1, 22, f"Direnç kırıldı ({sayi(L_)})" if ad == "seviye" else f"Hacim bölgesi kırıldı ({sayi(L_)})", L_)
-        elif cp > L_ and c < L_ * (1 - tol / 2) and kirmizi and rv >= 1.0:
-            olay("dsk", -1, 22, f"Destek kırıldı ({sayi(L_)})" if ad == "seviye" else f"Hacim bölgesi kırıldı ({sayi(L_)})", L_)
-        elif l <= L_ * (1 + tol) and c > L_ and cp >= L_ * (1 - tol) and yesil and rv >= 1.0:
-            olay("dd", 1, 18, f"Destekten dönüş ({sayi(L_)})", L_)
-        elif h >= L_ * (1 - tol) and c < L_ and cp <= L_ * (1 + tol) and kirmizi and rv >= 1.0:
-            olay("rd", -1, 18, f"Dirençten dönüş ({sayi(L_)})", L_)
+    for d in sev_d:
+        L_, g = d["p"], d["guc"]
+        if g < 0.4:
+            continue
+        ac = (f"{d['temas']} temas" if d["temas"] else "") + (", rol değişimi" if d.get("rol") else "") + f" · {d['kaynak']}"
+        ad = "Direnç" if "hacim" not in d["kaynak"] else "Hacim bölgesi"
+        k = int(round((0.6 + 0.6 * g) * 22))
+        # Kırılım: kapanış seviyenin belirgin üstünde, gövdesi dolu, hacimli
+        if cp < L_ and c > L_ * (1 + tol / 2) and c - L_ >= 0.15 * atr and yesil and govde_orani >= 0.45 and rv >= 1.1:
+            olay("dk", 1, k, f"{ad} kırıldı ({sayi(L_)})", L_, guc=g, aciklama=ac)
+        elif cp > L_ and c < L_ * (1 - tol / 2) and L_ - c >= 0.15 * atr and kirmizi and govde_orani >= 0.45 and rv >= 1.1:
+            olay("dsk", -1, k, f"{'Destek' if ad == 'Direnç' else ad} kırıldı ({sayi(L_)})", L_, guc=g, aciklama=ac)
+        # Dönüş: seviyeye değip geri dönen, üst/alt bölgesinde kapanan ve onay mumu ya da hacmi olan mum
+        elif l <= L_ * (1 + tol) and c > L_ and cp >= L_ * (1 - tol) and yesil and c >= l + 0.6 * aralik and (mum_al or rv >= 1.3):
+            olay("dd", 1, int(round((0.6 + 0.6 * g) * 18)), f"Destekten dönüş ({sayi(L_)})", L_, guc=g, aciklama=ac, kirilim=False)
+        elif h >= L_ * (1 - tol) and c < L_ and cp <= L_ * (1 + tol) and kirmizi and c <= h - 0.6 * aralik and (mum_sat or rv >= 1.3):
+            olay("rd", -1, int(round((0.6 + 0.6 * g) * 18)), f"Dirençten dönüş ({sayi(L_)})", L_, guc=g, aciklama=ac, kirilim=False)
 
-    # Stop avı (likidite süpürme): önceki dibin altına iğne, geri kapanış, hacim
-    aralik = max(h - l, 1e-9)
+    # Stop avı (likidite süpürme)
     son_dipler = [p for p in pv if p[2] == "L" and p[0] >= i - 60]
     son_tepeler = [p for p in pv if p[2] == "H" and p[0] >= i - 60]
     for p in son_dipler[-3:]:
         if l < p[1] * 0.9995 and c > p[1] and (min(o, c) - l) >= 0.5 * aralik and rv >= 1.2:
-            olay("sweep", 1, 26, f"Stop avı + dönüş ({sayi(p[1])} altı süpürüldü)", p[1], stop=l - 0.3 * atr)
+            olay("sweep", 1, 26, f"Stop avı + dönüş ({sayi(p[1])} altı süpürüldü)", p[1], stop=l - 0.3 * atr, guc=0.6, aciklama="önceki dip", kirilim=False)
     for p in son_tepeler[-3:]:
         if h > p[1] * 1.0005 and c < p[1] and (h - max(o, c)) >= 0.5 * aralik and rv >= 1.2:
-            olay("sweep", -1, 26, f"Stop avı + dönüş ({sayi(p[1])} üstü süpürüldü)", p[1], stop=h + 0.3 * atr)
+            olay("sweep", -1, 26, f"Stop avı + dönüş ({sayi(p[1])} üstü süpürüldü)", p[1], stop=h + 0.3 * atr, guc=0.6, aciklama="önceki tepe", kirilim=False)
 
-    # Emilim: destekte büyük hacim ama fiyat düşmüyor (alıcılar satışı karşılıyor)
+    # Emilim
     if rv >= 1.8 and (h - l) <= 0.7 * atr:
-        for L_ in sev + profil_sev:
+        for d in sev_d:
+            L_ = d["p"]
+            if d["guc"] < 0.4:
+                continue
             if abs(l - L_) / L_ <= tol and c >= l + 0.5 * aralik:
-                olay("emilim", 1, 20, f"Emilim: {sayi(L_)} desteğinde satışlar karşılandı", L_)
+                olay("emilim", 1, 20, f"Emilim: {sayi(L_)} desteğinde satışlar karşılandı", L_, guc=d["guc"], kirilim=False)
             if abs(h - L_) / L_ <= tol and c <= h - 0.5 * aralik:
-                olay("emilim", -1, 20, f"Emilim: {sayi(L_)} direncinde alımlar karşılandı", L_)
+                olay("emilim", -1, 20, f"Emilim: {sayi(L_)} direncinde alımlar karşılandı", L_, guc=d["guc"], kirilim=False)
 
-    # Piyasa yapısı: BOS (trend devamı) / CHoCH (trend dönüşü)
+    # Piyasa yapısı: BOS / CHoCH
     yapi, sH, sL = yapi_bul(pv)
-    if sH and cp <= sH[-1][1] < c and yesil and rv >= 1.0:
+    if sH and cp <= sH[-1][1] < c and yesil and rv >= 1.0 and govde_orani >= 0.4:
         if yapi == 1:
-            olay("yapi", 1, 18, f"Yapı kırılımı / BOS ({sayi(sH[-1][1])})", sH[-1][1])
+            olay("yapi", 1, 18, f"Yapı kırılımı / BOS ({sayi(sH[-1][1])})", sH[-1][1], guc=0.55, aciklama="son tepe")
         elif yapi == -1:
-            olay("yapi", 1, 22, f"Trend dönüşü / CHoCH ({sayi(sH[-1][1])})", sH[-1][1])
-    if sL and cp >= sL[-1][1] > c and kirmizi and rv >= 1.0:
+            olay("yapi", 1, 22, f"Trend dönüşü / CHoCH ({sayi(sH[-1][1])})", sH[-1][1], guc=0.6, aciklama="son tepe")
+    if sL and cp >= sL[-1][1] > c and kirmizi and rv >= 1.0 and govde_orani >= 0.4:
         if yapi == -1:
-            olay("yapi", -1, 18, f"Yapı kırılımı / BOS ({sayi(sL[-1][1])})", sL[-1][1])
+            olay("yapi", -1, 18, f"Yapı kırılımı / BOS ({sayi(sL[-1][1])})", sL[-1][1], guc=0.55, aciklama="son dip")
         elif yapi == 1:
-            olay("yapi", -1, 22, f"Trend dönüşü / CHoCH ({sayi(sL[-1][1])})", sL[-1][1])
+            olay("yapi", -1, 22, f"Trend dönüşü / CHoCH ({sayi(sL[-1][1])})", sL[-1][1], guc=0.6, aciklama="son dip")
+
+    # RSI uyumsuzluğu + onay mumu = dönüş olayı
+    uyum = uyumsuzluk(A, pv, i)
+    if uyum > 0 and yesil and c > A["High"][i - 1] and (mum_al or rv >= 1.2):
+        olay("uyum", 1, 18, "Pozitif RSI uyumsuzluğu + onay mumu", l, guc=0.55, kirilim=False)
+    if uyum < 0 and kirmizi and c < A["Low"][i - 1] and (mum_sat or rv >= 1.2):
+        olay("uyum", -1, 18, "Negatif RSI uyumsuzluğu + onay mumu", h, guc=0.55, kirilim=False)
 
     formlar = formasyonlar(A, pv, i)
     for f in formlar:
-        if f["durum"] == "kırıldı" and f["yon"] != 0:
+        if f["durum"] == "kırıldı" and f["yon"] != 0 and rv >= 1.0:
             yon_adi = "yukarı" if f["yon"] > 0 else "aşağı"
-            olay("f-" + f["ad"], f["yon"], 26, f"{f['ad']} {yon_adi} kırılımı", f["ref"], f["hedef"])
+            olay("f-" + f["ad"], f["yon"], 26, f"{f['ad']} {yon_adi} kırılımı", f["ref"], f["hedef"], guc=0.65, aciklama="formasyon")
 
     en_iyi = None
     for yon in (1, -1):
@@ -716,9 +1016,11 @@ def sinyal_bul(ctx, i):
         toplam = min(sum(v[1] for v in grup), 40)
         hedef_ozel = next((v[4] for v in grup if v[4]), None)
         stop_ozel = next((v[5] for v in grup if v[5]), None)
-        s = puanla(ctx, i, yon, toplam, [v[2] for v in grup], grup[0][3], hedef_ozel, stop_ozel, sev, prof, pv)
+        ex = dict(mum=mum, uyum=uyum, ref_guc=grup[0][7], ref_aciklama=grup[0][8], kirilim=grup[0][9], sev_d=sev_d)
+        s = puanla(ctx, i, yon, toplam, [v[2] for v in grup], grup[0][3], hedef_ozel, stop_ozel, sev, prof, pv, ex)
         anahtar = grup[0][6]
         s["kurulum"] = anahtar
+        s["guven"] = model_uygula(ctx["mod"], s)
         ag = AGIRLIK.get(ctx["mod"], {}).get(anahtar)
         if ag and ag["bonus"]:
             s["guven"] = int(max(0, min(100, s["guven"] + ag["bonus"])))
@@ -726,6 +1028,72 @@ def sinyal_bul(ctx, i):
         if en_iyi is None or s["guven"] > en_iyi["guven"]:
             en_iyi = s
     return en_iyi, formlar
+
+
+# ---------- Öğrenen model: geçmiş sinyallerden hangi koşulların işe yaradığını öğrenir ----------
+MODEL = {"1": None, "5": None, "g": None, "w": None}
+
+
+def _sigmoid(z):
+    return 1 / (1 + np.exp(-np.clip(z, -30, 30)))
+
+
+def _lojistik(X, y, l2=0.02, adim=500, oran=0.3):
+    w, b = np.zeros(X.shape[1]), 0.0
+    for _ in range(adim):
+        p = _sigmoid(X @ w + b)
+        hata = p - y
+        w -= oran * (X.T @ hata / len(y) + l2 * w)
+        b -= oran * hata.mean()
+    return w, b
+
+
+def _auc(y, p):
+    sira = np.argsort(np.argsort(p)) + 1
+    poz = y == 1
+    n1, n0 = poz.sum(), (~poz).sum()
+    if n1 == 0 or n0 == 0:
+        return 0.5
+    return float((sira[poz].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
+
+
+def model_egit(sinyaller: list[dict]) -> dict | None:
+    """Bitmiş sinyallerden lojistik model eğitir. Zamana göre son %25'lik dilimde test eder;
+    tahmin gücü (AUC) yetersizse model kullanılmaz."""
+    veri = sorted([s for s in sinyaller if s["sonuc"] != "açık" and s.get("oz") and len(s["oz"]) == len(OZ_ADI)],
+                  key=lambda s: pd.Timestamp(s["zaman"]).value)
+    if len(veri) < 200:
+        return dict(aktif=False, n=len(veri), auc=None, neden="yetersiz örnek (en az 200 bitmiş sinyal)")
+    X = np.array([s["oz"] for s in veri], dtype=float)
+    y = np.array([1.0 if s["sonuc"] == "hedef" or (s["sonuc"] == "süre doldu" and s["getiri"] > 0) else 0.0 for s in veri])
+    k = int(len(y) * 0.75)
+    mu, sd = X[:k].mean(0), X[:k].std(0) + 1e-6
+    w, b = _lojistik((X[:k] - mu) / sd, y[:k])
+    yt = y[k:]
+    if min(yt.sum(), len(yt) - yt.sum()) < 30:
+        return dict(aktif=False, n=len(veri), auc=None, neden="test dönemi için yeterli örnek yok")
+    auc = _auc(yt, _sigmoid(((X[k:] - mu) / sd) @ w + b))
+    mu, sd = X.mean(0), X.std(0) + 1e-6
+    w, b = _lojistik((X - mu) / sd, y)
+    p = _sigmoid(((X - mu) / sd) @ w + b)
+    aktif = auc >= 0.54
+    onemli = sorted(zip(OZ_ADI, w.tolist()), key=lambda x: -abs(x[1]))[:6]
+    return dict(aktif=aktif, n=len(y), auc=round(auc, 3), oran=round(float(y.mean()) * 100, 1), mu=mu, sd=sd, w=w, b=b,
+                dagilim=np.sort(p), onemli=[[a, round(v, 2)] for a, v in onemli],
+                neden=None if aktif else "tahmin gücü düşük, kural puanı kullanılıyor")
+
+
+def model_uygula(mod: str, s: dict) -> int:
+    m = MODEL.get(mod)
+    if not m or not m.get("aktif") or not s.get("oz"):
+        return s["guven"]
+    p = float(_sigmoid(((np.array(s["oz"]) - m["mu"]) / m["sd"]) @ m["w"] + m["b"]))
+    yuzdelik = float(np.searchsorted(m["dagilim"], p)) / len(m["dagilim"]) * 100
+    guven = int(round(0.5 * s["guven"] + 0.5 * yuzdelik))
+    metin = f"Öğrenen model: benzer kurulumların %{p * 100:.0f}'i hedefe ulaştı (ortalama %{m['oran']:.0f})"
+    (s["arti"] if p * 100 >= m["oran"] else s["eksi"]).append(metin)
+    s["olasilik"] = round(p * 100, 1)
+    return max(0, min(100, guven))
 
 
 def sonuc_hesapla(A, s, n):
@@ -815,6 +1183,17 @@ def bot_yorumu(ctx, sev, formlar) -> tuple[list[str], dict]:
     direnc = min([x for x in sev if x > c], default=None)
     if destek and direnc:
         cumle.append(f"En yakın destek {sayi(destek)} (%{sayi((c / destek - 1) * 100, 1)} aşağıda), direnç {sayi(direnc)} (%{sayi((direnc / c - 1) * 100, 1)} yukarıda).")
+    adx = nanv(A["ADX"][i], 0)
+    if adx:
+        cumle.append(f"Trend gücü (ADX) {adx:.0f}: " + ("güçlü trend var, kırılımlar daha güvenilir." if adx >= 25
+                     else "trend zayıf, fiyat yatay bantta; seviyeden dönüşler daha anlamlı." if adx < 18 else "orta güçte trend."))
+    um = uyumsuzluk(A, ctx["pv"], i)
+    if um:
+        cumle.append("RSI " + ("pozitif uyumsuzluk: fiyat yeni dip yaparken momentum güçleniyor, dönüş gelebilir." if um > 0
+                     else "negatif uyumsuzluk: fiyat yeni tepe yaparken momentum zayıflıyor, düzeltme gelebilir."))
+    mm = [m_ for m_ in mum_formasyon(A, i)]
+    if mm:
+        cumle.append("Son mum: " + ", ".join(m_[0] for m_ in mm) + ".")
     for f in formlar:
         if f["durum"] == "oluşuyor":
             yon = "yukarı" if f["yon"] > 0 else ("aşağı" if f["yon"] < 0 else "iki yöne de")
@@ -851,7 +1230,8 @@ def hisse_analiz(sym, df15, gunluk, xu15, son_kapali, tam_test=False, mod="g") -
         bas = n - TEST_UFKU - 1
     sinyaller = sinyalleri_tara(ctx, bas)
     _, formlar = sinyal_bul(ctx, n - 1)
-    sev = seviyeler_bul(ctx["pv"])
+    sev_d = [d for d in seviye_listesi(ctx, n - 1, ctx["pv"]) if d["guc"] >= 0.4]
+    sev = [d["p"] for d in sev_d]
     i = n - 1
     fiyat = float(df["Close"].iloc[-1])
     if mod != "w":
@@ -874,7 +1254,9 @@ def hisse_analiz(sym, df15, gunluk, xu15, son_kapali, tam_test=False, mod="g") -
                 rv=nanv(A["RVOL"][i]), ab=nanv(A["AB"][i]), vwap=nanv(A["VWAP"][i], None), rsi=nanv(A["RSI"][i], 50),
                 macd=nanv(A["MACDh"][i]), atr=nanv(A["ATR"][i]) / fiyat * 100, yapi=yapi_bul(ctx["pv"])[0],
                 htf=int(ctx["htf"][i]), rs=float(ctx["rs"][i]), birikim=birikim, likidite=gunluk_tl,
-                yesil_mum=bool(A["Close"][i] >= A["Open"][i]), mod=mod)
+                yesil_mum=bool(A["Close"][i] >= A["Open"][i]), mod=mod, sev_d=sev_d,
+                mum=[m_[0] for m_ in mum_formasyon(A, i)], uyum=uyumsuzluk(A, ctx["pv"], i), adx=nanv(A["ADX"][i], 0))
+
 
 
 
@@ -1292,6 +1674,7 @@ function fis(h,m,tam){const o=h[m],s=o.akt,al=s.yon>0;
     <div><small>Stop</small><b class="dn">${tl(s.stop)}</b><em class="dn">−${tl(s.risk)}%</em></div>
     <div><small>Hedef 1</small><b class="up">${tl(s.hedef)}</b><em class="up">+${tl(s.pot[0])}%</em></div>
     <div><small>Hedef 2</small><b class="up">${tl(s.hedef2)}</b><em class="up">+${tl(s.pot[1])}%</em></div></div>
+   ${s.olasilik!=null?`<div class="drm" style="margin-bottom:0"><i style="background:var(--acT)"></i><span>Öğrenen model: benzer kurulumların <b style="color:var(--tx)">%${tl(s.olasilik,0)}</b>'i hedefe ulaştı</span></div>`:''}
    <div class="drm ${s.durum.kod}"><i></i><span>${esc(s.durum.metin)}${s.en_iyi>0?` · en iyi ${yz(s.en_iyi)}`:''}</span></div>`;
   if(tam)x+=karPlani(h,m);
   return x+'</div>'}
@@ -1545,11 +1928,18 @@ function ekranProfil(){const K=V.karne[M]||[];const l=liste_.filter(h=>fav.has(h
    <label><span class="lbl">Min. günlük işlem</span><select id="a_lik">${[20,30,100,300].map(v=>`<option value="${v}"${ayar.lik==v?' selected':''}>${v} mn ₺</option>`).join('')}</select></label>
    <label><span class="lbl">Tema</span><select id="a_tema"><option value="koyu"${ayar.tema==='koyu'?' selected':''}>Koyu</option><option value="acik"${ayar.tema==='acik'?' selected':''}>Açık</option></select></label></div>
   <div class="bolum"><h3>Favoriler</h3><span class="lbl">${l.length}</span></div>`+(l.length?`<div class="kart liste">${l.map(h=>satirH(h,'Bot: '+gorus(h,M).tur)).join('')}</div>`:`<div class="bos">Hisse detayında ☆ ile ekle</div>`)+
-  `<div class="bolum"><h3>Kurulum karnesi · ${GOSTER[M]}</h3></div><p class="acik-not">Sinyal türlerinin geçmiş testte tutma oranı. En az 15 örneği olan türlerde güven puanı otomatik ayarlanır.</p>`+
-  (K.length?`<div class="kart"><table class="tbl"><tr><th>Kurulum</th><th>Adet</th><th>İsabet</th><th>Ayar</th></tr>${K.map(k=>`<tr><td>${esc(k.ad)}</td><td>${k.n}</td><td class="${(k.isabet||0)>=45?'up':'dn'}">${k.isabet==null?'—':'%'+k.isabet}</td><td class="${k.bonus>0?'up':k.bonus<0?'dn':'mu'}">${k.bonus>0?'+':''}${k.bonus}</td></tr>`).join('')}</table></div>`:`<div class="bos">Karne hazırlanıyor</div>`)+
+  modelKart()+`<div class="bolum"><h3>Kurulum karnesi · ${GOSTER[M]}</h3></div><p class="acik-not">Sinyal türlerinin geçmiş testte tutma oranı. En az 15 örneği olan türlerde güven puanı otomatik ayarlanır.</p>`+
+  (K.length?`<div class="kart"><table class="tbl"><tr><th>Kurulum</th><th>Adet</th><th>İsabet</th><th>Ayar</th></tr>${K.map(k=>`<tr><td>${esc(k.ad)}</td><td>${k.n}</td><td class="${(k.isabet||0)>=40?'up':'dn'}">${k.isabet==null?'—':'%'+k.isabet}</td><td class="${k.bonus>0?'up':k.bonus<0?'dn':'mu'}">${k.bonus>0?'+':''}${k.bonus}</td></tr>`).join('')}</table></div>`:`<div class="bos">Karne hazırlanıyor</div>`)+
   `<div class="bolum"><h3>Zaman dilimleri ve vade</h3></div><div class="kart"><table class="tbl"><tr><th>Grafik</th><th>Vade</th><th>Süre</th></tr>${MODLAR.map(m=>`<tr><td>${GOSTER[m]}</td><td>${V.vade[m].ad}</td><td>${V.vade[m].sure}</td></tr>`).join('')}</table></div>
   <p class="not">1 ve 5 dk analizleri en likit ${V.hisseler.filter(h=>h.hizli).length} hissede yapılır. Veriler Yahoo Finance'tan ~15 dk gecikmeli gelir. Son tarama ${V.guncelleme}${V.derin?', son derin test '+V.derin:''}. Yatırım tavsiyesi değildir.</p>`}
 
+function modelKart(){const m=(V.model||{})[M];
+  let x=`<div class="bolum"><h3>Öğrenen model · ${GOSTER[M]}</h3>${m&&m.aktif?'<span class="rozet up">Aktif</span>':'<span class="rozet">Beklemede</span>'}</div>`;
+  if(!m)return x+`<div class="bos">Model ilk derin taramadan sonra eğitilir.</div>`;
+  x+=`<div class="kart pad"><p class="acik-not" style="margin:0 0 12px">Bot geçmişteki ${m.n} sinyalin hangisinin hedefe ulaştığına bakarak hangi koşulların gerçekten işe yaradığını öğrenir ve güven puanını buna göre ayarlar.${m.neden?' <b style="color:var(--wa)">'+esc(m.neden)+'</b>':''}</p>
+   <div class="istat"><div><span class="lbl">Örnek</span><b>${m.n}</b></div><div><span class="lbl">Tahmin gücü</span><b class="${(m.auc||0)>=0.58?'up':(m.auc||0)>=0.54?'wa':'dn'}">${m.auc==null?'—':tl(m.auc*100,0)}</b></div><div><span class="lbl">Genel isabet</span><b>${m.oran==null?'—':'%'+tl(m.oran,0)}</b></div></div>`;
+  if(m.onemli&&m.onemli.length)x+=`<div class="lbl" style="margin:14px 0 4px">En etkili koşullar</div>${m.onemli.map(([a,w])=>`<div class="sat1" style="padding:6px 0;font-size:13px;font-weight:700"><span>${esc(a)}</span><span class="${w>=0?'up':'dn'}">${w>=0?'işe yarıyor ▲':'zarar veriyor ▼'}</span></div>`).join('')}`;
+  return x+`<p class="not" style="margin-top:10px">Tahmin gücü 50 = yazı tura, 54 altı kullanılmaz, 60 üstü iyi. Model her 30 dakikada bir yeniden eğitilir ve sadece daha önce görmediği dönemde test edilerek değerlendirilir.</p></div>`}
 /* çizim */
 let ekran=D.get('ekran','panel');if(ekran==='bot'&&!B)ekran='panel';
 function ciz(yeniEkran){hazirla();ustCiz();navCiz();
@@ -1587,7 +1977,7 @@ $('#ekran').onclick=e=>{const t=e.target.closest('[data-pf],[data-pg],[data-mf],
 
 /* hisse detayı */
 let chart=null,ro=null,secili=null,DM='g',sekme=D.get('sekme','analiz');
-const gor=Object.assign({plan:true,vwap:true,ema:true,prof:true,sev:false,form:true},D.get('gor',{}));
+const gor=Object.assign({plan:true,vwap:true,ema:true,prof:false,sev:true,form:true},D.get('gor2',{}));
 function ema(d,n){const k=2/(n+1);let e=d[0];return d.map(v=>e=v*k+e*(1-k))}
 function vwapHesap(m){let gun=-1,pv=0,vv=0;return m.map(x=>{const g=Math.floor(x[0]/86400);if(g!==gun){gun=g;pv=0;vv=0}pv+=(x[2]+x[3]+x[4])/3*x[5];vv+=x[5];return vv?pv/vv:x[4]})}
 function delta(m){return m.map(x=>{const r=x[2]-x[3];return r>0?x[5]*((x[4]-x[3])-(x[2]-x[4]))/r:0})}
@@ -1642,7 +2032,9 @@ function grafikKur(h,m){if(chart){chart.remove();chart=null}const el=$('#grafik'
   let cl=[];const lo=Math.min(...md.map(x=>x[3]))*.97,hi=Math.max(...md.map(x=>x[2]))*1.03;
   function uyg(){[e20,e50].forEach(s=>s.applyOptions({visible:gor.ema}));vw.applyOptions({visible:gor.vwap&&m!=='w'});fs.forEach(s=>s.applyOptions({visible:gor.form}));
     cl.forEach(p=>mum.removePriceLine(p));cl=[];const ek=x=>cl.push(mum.createPriceLine(Object.assign({lineWidth:1,axisLabelVisible:false},x)));
-    if(gor.sev)o.sev.filter(s=>s[0]>lo&&s[0]<hi).forEach(s=>ek({price:s[0],color:(s[1]==='D'?'rgba(47,224,160,':'rgba(255,92,124,')+(0.3+0.45*(s[2]||0)).toFixed(2)+')',lineStyle:2}));
+    if(gor.sev){const al=o.sev.filter(s=>s[1]==='D'&&s[0]>lo).sort((a,b)=>b[0]-a[0]).slice(0,3),us=o.sev.filter(s=>s[1]==='R'&&s[0]<hi).sort((a,b)=>a[0]-b[0]).slice(0,3);
+      [...al,...us].forEach(s=>{const g=s[2]||0;ek({price:s[0],color:(s[1]==='D'?'rgba(47,224,160,':'rgba(255,92,124,')+(0.35+0.55*g).toFixed(2)+')',lineStyle:g>=0.7?0:2,lineWidth:g>=0.7?2:1,
+        title:(s[1]==='D'?'D':'R')+(s[3]>1?' '+s[3]+'x':''),axisLabelVisible:g>=0.7})})}
     if(gor.prof&&o.prof){ek({price:o.prof.poc,color:'#ffb547',lineStyle:0,title:'POC',axisLabelVisible:true});ek({price:o.prof.vah,color:'rgba(139,147,167,.5)',lineStyle:1,title:'VAH'});ek({price:o.prof.val,color:'rgba(139,147,167,.5)',lineStyle:1,title:'VAL'})}
     const s=o.akt;if(gor.plan&&s){ek({price:s.stop,color:DN,lineStyle:0,title:'SL',axisLabelVisible:true});ek({price:s.giris_ust,color:'#7c6cff',lineStyle:2,title:'GİRİŞ'});ek({price:s.giris_alt,color:'#7c6cff',lineStyle:2});
       [s.hedef,s.hedef2,s.hedef3].forEach((p,i)=>ek({price:p,color:`rgba(47,224,160,${1-i*.25})`,lineStyle:0,title:'H'+(i+1),axisLabelVisible:i===0}))}
@@ -1653,8 +2045,8 @@ function grafikKur(h,m){if(chart){chart.remove();chart=null}const el=$('#grafik'
   let sec=D.get('ar_'+m,Object.keys(ar)[1]);if(!ar[sec])sec=Object.keys(ar)[1];
   const arU=()=>{const k=Math.min(ar[sec],n);chart.timeScale().setVisibleLogicalRange({from:n-k-.5,to:n+4})};arU();
   const gs=$('#gsec'),t=(k,a,on)=>`<button class="chip${on?' on':''}" data-k="${k}">${a}</button>`;
-  const gsc=()=>{gs.innerHTML=Object.keys(ar).map(k=>t('a:'+k,k,sec===k)).join('')+'<span class="ayr"></span>'+t('g:plan','Plan',gor.plan)+(m!=='w'?t('g:vwap','VWAP',gor.vwap):'')+t('g:ema','EMA',gor.ema)+t('g:prof','Profil',gor.prof)+t('g:form','Formasyon',gor.form)+t('g:sev','S/R',gor.sev)};gsc();
-  gs.onclick=e=>{const b=e.target.closest('[data-k]');if(!b)return;const[tp,k]=b.dataset.k.split(':');if(tp==='a'){sec=k;D.set('ar_'+m,k);arU()}else{gor[k]=!gor[k];D.set('gor',gor);uyg()}gsc()};
+  const gsc=()=>{gs.innerHTML=Object.keys(ar).map(k=>t('a:'+k,k,sec===k)).join('')+'<span class="ayr"></span>'+t('g:plan','Plan',gor.plan)+(m!=='w'?t('g:vwap','VWAP',gor.vwap):'')+t('g:ema','EMA',gor.ema)+t('g:sev','Destek/Direnç',gor.sev)+t('g:form','Formasyon',gor.form)+t('g:prof','Hacim profili',gor.prof)};gsc();
+  gs.onclick=e=>{const b=e.target.closest('[data-k]');if(!b)return;const[tp,k]=b.dataset.k.split(':');if(tp==='a'){sec=k;D.set('ar_'+m,k);arU()}else{gor[k]=!gor[k];D.set('gor2',gor);uyg()}gsc()};
   const ix=Object.fromEntries(md.map((x,i)=>[x[0],i]));
   const lg=i=>{const x=md[i];if(!x)return'';const d=dl[i];return `A <b>${tl(x[1])}</b> Y <b>${tl(x[2])}</b> D <b>${tl(x[3])}</b> K <b class="${x[4]>=x[1]?'up':'dn'}">${tl(x[4])}</b> · Hac <b>${tl(x[5],0)}</b> · <span class="${d>=0?'up':'dn'}">alıcı %${tl((1+d/(x[5]||1))*50,0)}</span>`};
   $('#legend').innerHTML=lg(n-1);chart.subscribeCrosshairMove(p=>{$('#legend').innerHTML=lg(p&&p.time!=null&&ix[p.time]!=null?ix[p.time]:n-1)});
@@ -1677,15 +2069,22 @@ function sekmeCiz(){document.querySelectorAll('#sekmeler button').forEach(b=>b.c
       <tr><td>RSI 14</td><td>${tl(o.rsi,0)}</td><td class="mu">${o.rsi>70?'aşırı alım':o.rsi<30?'aşırı satım':'nötr'}</td></tr>
       <tr><td>MACD</td><td class="${yon(o.macd||0)}">${(o.macd||0)>=0?'Pozitif':'Negatif'}</td><td class="mu">momentum</td></tr>
       <tr><td>Endekse göre</td><td class="${yon(o.rs||0)}">${yz(o.rs,1)}</td><td class="mu">göreli güç</td></tr>
-      <tr><td>ATR</td><td>%${tl(o.atr)}</td><td class="mu">mum oynaklığı</td></tr></table></div>`;
+      <tr><td>ATR</td><td>%${tl(o.atr)}</td><td class="mu">mum oynaklığı</td></tr>
+      <tr><td>ADX</td><td>${tl(o.adx,0)}</td><td class="mu">${o.adx>=25?'güçlü trend':o.adx<18?'yatay piyasa':'orta trend'}</td></tr>
+      <tr><td>RSI uyumsuzluk</td><td class="${o.uyum>0?'up':o.uyum<0?'dn':''}">${o.uyum>0?'Pozitif':o.uyum<0?'Negatif':'Yok'}</td><td class="mu">${o.uyum?'dönüş habercisi':'—'}</td></tr>
+      <tr><td>Son mum</td><td colspan="2" style="white-space:normal">${(o.mum||[]).length?o.mum.map(esc).join(', '):'<span class="mu">belirgin formasyon yok</span>'}</td></tr></table></div>`;
     x+=`<div class="bolum"><h3>Formasyonlar</h3></div>`+(o.form.length?`<div class="kart"><table class="tbl"><tr><th>Formasyon</th><th>Kritik</th><th>Durum</th></tr>${o.form.map(f=>`<tr><td>${esc(f.ad)}</td><td>${tl(f.ref)}</td><td class="${f.durum==='kırıldı'?(f.yon>0?'up':'dn'):'mu'}">${f.durum}</td></tr>`).join('')}</table></div>`:`<div class="bos">Formasyon yok</div>`);
-    const sv=[...o.sev].sort((a,b)=>Math.abs(a[0]-o.p)-Math.abs(b[0]-o.p)).slice(0,8).sort((a,b)=>b[0]-a[0]);
-    x+=`<div class="bolum"><h3>Destek / direnç</h3></div><div class="kart"><table class="tbl"><tr><th>Seviye</th><th>Tür</th><th>Uzaklık</th><th>Hacim</th></tr>${sv.map(s=>`<tr><td>${tl(s[0])}</td><td class="${s[1]==='D'?'up':'dn'}">${s[1]==='D'?'Destek':'Direnç'}</td><td>${yz((s[0]/o.p-1)*100,1)}</td><td><span style="display:inline-block;height:6px;border-radius:9px;background:var(--grad);width:${Math.max(8,Math.round((s[2]||0)*50))}px"></span></td></tr>`).join('')}</table></div>`}
+    const sv=[...o.sev].sort((a,b)=>Math.abs(a[0]-o.p)-Math.abs(b[0]-o.p)).slice(0,10).sort((a,b)=>b[0]-a[0]);
+    x+=`<div class="bolum"><h3>Destek / direnç</h3><span class="lbl">güce göre</span></div>`+(sv.length?`<div class="kart liste">${sv.map(s=>{const g=s[2]||0,d=s[1]==='D';return `<div style="cursor:default">
+      <span class="avatar" style="width:38px;height:38px;background:${d?'var(--ups)':'var(--dns)'};color:${d?'var(--up)':'var(--dn)'};box-shadow:none">${d?'D':'R'}</span>
+      <div class="ad"><b>${tl(s[0])} <span class="mu" style="font-weight:700;font-size:12px">${yz((s[0]/o.p-1)*100,1)}</span></b><small>${s[3]?s[3]+' kez test edildi · ':''}${esc(s[4]||'')}${s[5]?' · rol değişimi':''}</small></div>
+      <div class="sag" style="width:74px"><small class="${g>=0.7?'up':g>=0.5?'wa':'mu'}">${g>=0.7?'Güçlü':g>=0.5?'Orta':'Zayıf'}</small><div class="bar" style="margin-top:5px"><i style="width:${Math.round(g*100)}%"></i></div></div></div>`}).join('')}</div>`:`<div class="bos">Yakında güçlü seviye yok</div>`)+
+     `<p class="not"><b style="color:var(--tx)">Seviyeler nasıl bulunuyor?</b> Fiyatın en az ~1 ATR'lik belirgin dönüş yaptığı tepe ve dipler kümelenir; aynı bölgede ne kadar çok dönüş olduysa, ne kadar yakın zamandaysa ve eski direnç desteğe döndüyse (rol değişimi) seviye o kadar güçlü sayılır. Buna günlük grafiğin ana tepe/dipleri ve en çok işlem gören fiyatlar (hacim profili POC/VAH/VAL) eklenir. Bot sadece güçlü seviyelerde sinyal üretir.</p>`}
   else{const l=[...o.sinF].reverse(),bit=l.filter(s=>s.sonuc!=='açık'),hd=bit.filter(s=>s.sonuc==='hedef').length,st=bit.filter(s=>s.sonuc==='stop').length;
     x+=`<div class="istat"><div><span class="lbl">Sinyal</span><b>${l.length}</b></div><div><span class="lbl">Hedef / stop</span><b><span class="up">${hd}</span> / <span class="dn">${st}</span></b></div><div><span class="lbl">İsabet</span><b>${hd+st?'%'+tl(hd/(hd+st)*100,0):'—'}</b></div></div>`;
     x+=l.length?`<div class="kart" style="margin-top:12px"><table class="tbl"><tr><th>Zaman</th><th>Yön</th><th>Gv</th><th>Sonuç</th></tr>${l.slice(0,20).map(s=>`<tr><td>${s.saat}</td><td><span class="yon ${s.yon>0?'al':'sat'}">${s.tur}</span></td><td>${s.guven}</td>
       <td class="${s.sonuc==='hedef'?'up':s.sonuc==='stop'?'dn':'mu'}">${esc(s.sonuc)} ${yz(s.getiri,1)}</td></tr>`).join('')}</table></div>`:`<div class="bos" style="margin-top:12px">Sinyal yok</div>`;
-    x+=`<p class="not">Her sinyalden sonra ${V.ufuk} ${birim(m)} içinde önce H1'e mi stopa mı gidildiğine bakıldı. Hedefler riskin en az 1,5 katı olduğu için ~%40 üstü isabet kârlı sayılır.</p>`}
+    x+=`<p class="not">Her sinyalden sonra ${V.ufuk} ${birim(m)} içinde önce H1'e mi stopa mı gidildiğine bakıldı. Hedefler riskin en az 1,5 katı olduğu için ~%40 isabet başabaştır; %40'ın üstü kârlı demektir. Yani %45 isabet düşük değil, kazandıran bir orandır.</p>`}
   $('#sekme').innerHTML=x}
 $('#sekmeler').onclick=e=>{const b=e.target.closest('button');if(!b)return;sekme=b.dataset.s;D.set('sekme',sekme);sekmeCiz()};
 
@@ -1733,7 +2132,7 @@ def sinyal_json(s: dict, df: pd.DataFrame, n: int, fiyat: float, mod: str) -> di
         risk=_r(abs(s["fiyat"] - s["stop"]) / s["fiyat"] * 100, 2),
         pot=[yuzde(s["hedef"]), yuzde(s["hedef2"]), yuzde(s["hedef3"])],
         en_iyi=yuzde(en_iyi), kalan=max(TEST_UFKU - (n - 1 - s["i"]), 0),
-        vade=VADE[mod]["ad"], vade_sure=VADE[mod]["sure"],
+        vade=VADE[mod]["ad"], vade_sure=VADE[mod]["sure"], olasilik=s.get("olasilik"),
         kalite=("A+" if s["guven"] >= 80 and s["guclu"] and s["rk"] >= 2 else
                 "A" if s["guven"] >= 70 and s["rk"] >= 1.5 else "B" if s["guven"] >= 60 else "C"),
     )
@@ -1781,7 +2180,9 @@ def mod_json(a: dict, eski_sin: list | None) -> dict:
     return dict(
         p=_r(fiyat, 4), d=_r(a["degisim"], 2), m=mumlar, rv=_r(a["rv"], 2), ab=_r(a["ab"], 3), vw=_r(a["vwap"], 4),
         rsi=_r(a["rsi"], 1), macd=_r(a["macd"], 4), atr=_r(a["atr"], 2), yapi=a["yapi"], htf=a["htf"], rs=_r(a["rs"], 2),
-        sev=[[_r(x, 4), "D" if x < fiyat else "R", _r(bolge_gucu(prof, x), 2)] for x in a["sev"]],
+        sev=[[_r(d["p"], 4), "D" if d["p"] < fiyat else "R", _r(d["guc"], 2), d["temas"], d["kaynak"], int(bool(d.get("rol")))]
+             for d in a["sev_d"] if abs(d["p"] / fiyat - 1) <= 0.25],
+        mum=a.get("mum", []), uyum=a.get("uyum", 0), adx=_r(a.get("adx"), 0),
         form=formlar, yorum=yorum, tetik=tetik, gun_bar=max(gun_bar, {"1": 300, "5": 60, "g": 26}.get(mod, 1)) if mod != "w" else 1,
         prof=None if not prof else dict(poc=_r(prof["poc"], 4), vah=_r(prof["vah"], 4), val=_r(prof["val"], 4),
                                         bins=[[_r(m_, 2), _r(h_, 2)] for m_, h_ in zip(prof["merkez"], prof["hist"])]),
@@ -1804,6 +2205,8 @@ def karne_hesapla(sinyaller: list[dict]) -> tuple[list, dict]:
         bonus = 0
         if isabet is not None and len(l) >= 15:
             bonus = int(max(-10, min(8, round((isabet - 45) / 2.5))))
+            if len(l) >= 25 and isabet < 33:      # sürekli tutmayan kurulum pratikte kapatılır
+                bonus = -25
         agirlik[k] = dict(bonus=bonus, isabet=isabet or 0)
         ad = KURULUM_ADI.get(k, k[2:] + " kırılımı" if k.startswith("f-") else k)
         tablo.append(dict(ad=ad, n=len(l), hedef=hedef, stop=stop, isabet=_r(isabet, 0), ort=_r(ort, 2), bonus=bonus))
@@ -1894,6 +2297,7 @@ def akis_olaylari(analiz: dict) -> list[dict]:
     for o in olaylar:
         o["id"] = f"{o['s']}-{o['mod']}-{o['t']}-{o['tip']}"
     return olaylar[:150]
+
 
 
 # ---------- Canlı bot: sanal bütçeyle gerçek seansta otomatik işlem (kağıt üstünde) ----------
@@ -2512,6 +2916,10 @@ class Servis:
                     self.derin_sin[mod][h] = [kompakt(sinyal_json(s_, df, n, a["fiyat"], mod)) for s_ in f]
                 self.karne[mod], AGIRLIK[mod] = karne_hesapla(tum)
                 self.bot[mod] = bot_portfoyu(tum)
+                try:
+                    MODEL[mod] = model_egit(tum)
+                except Exception as e:  # noqa: BLE001
+                    MODEL[mod] = dict(aktif=False, n=0, auc=None, neden=f"eğitim hatası: {e}")
             self.derin_zaman = time.time()
 
         bist = None
@@ -2553,6 +2961,7 @@ class Servis:
             hisseler.append(kayit)
         akis = akis_olaylari(analiz)
         paket = dict(hisseler=hisseler, akis=akis, vade=VADE, dilim=DILIM_ADI, bist=bist, sektorler=sektor_ozeti(analiz["g"]), karne=self.karne, bot=self.bot,
+                     model={m: (None if not MODEL[m] else {k: MODEL[m].get(k) for k in ("aktif", "n", "auc", "oran", "onemli", "neden")}) for m in MODLAR},
                      seans=acik, guncelleme=f"{dt.datetime.now(TZ):%H:%M}", taranan=len(TUM_HISSELER),
                      likit=len(likitler), ufuk=TEST_UFKU, esik=ESIK,
                      derin=f"{dt.datetime.fromtimestamp(self.derin_zaman, TZ):%H:%M}" if self.derin_zaman else None)
@@ -2562,7 +2971,7 @@ class Servis:
 
 
 @st.cache_resource
-def servis_al_v3(surum: str = "kalici-1") -> Servis:
+def servis_al_v4(surum: str = "zeki-1") -> Servis:
     # Ad ve sürüm değişince Streamlit önceki app.py'den kalan eski servisi kullanmaz
     return Servis()
 
@@ -2603,10 +3012,10 @@ iframe {height:100dvh !important; display:block; border:0}
 div[data-testid="stVerticalBlock"] {gap:0 !important}
 </style>""", unsafe_allow_html=True)
 
-servis = servis_al_v3()
+servis = servis_al_v4()
 if not hasattr(servis, "canli") or not hasattr(servis.canli, "depo"):   # önbellekte eski sürüm kalmışsa yeniden kur
     st.cache_resource.clear()
-    servis = servis_al_v3()
+    servis = servis_al_v4()
 
 mesaj = None
 try:
