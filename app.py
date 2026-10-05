@@ -704,6 +704,7 @@ OZ_ADI = ["Olay gücü", "Trend uyumu", "Günlük trend", "VWAP tarafı", "Alıc
 def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, pv, ex=None) -> dict:
     ex = ex or {}
     A = ctx["A"]
+    ad_ = ADAPT.get(ctx["mod"]) or ADAPT_VARSAYILAN
     c, atr = A["Close"][i], nanv(A["ATR"][i], A["Close"][i] * 0.01)
     puan, arti, eksi = olay, [], []
     yukari = yon > 0
@@ -753,7 +754,7 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
     elif rv >= 1.2:
         puan += 3; arti.append(f"Hacim normal üstü ({sayi(rv, 1)}x)")
     elif rv < 0.8:
-        puan -= 10; eksi.append(f"Hacim zayıf ({sayi(rv, 1)}x)")
+        puan -= int(ad_["hacim_ceza"]); eksi.append(f"Hacim zayıf ({sayi(rv, 1)}x)")
 
     # Hacimli bölge
     yogun = max(bolge_gucu(prof, ref), bolge_gucu(prof, c))
@@ -794,7 +795,7 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
     if ctx["py"][i] * yon > 0:
         puan += 4; arti.append("BIST100 aynı yönde")
     elif ctx["py"][i] * yon < 0:
-        puan -= 8; eksi.append("BIST100 ters yönde")
+        puan -= int(ad_["piyasa_ceza"]); eksi.append("BIST100 ters yönde")
     rs = ctx["rs"][i]
     if yonlu(rs) > 2:
         puan += 5; arti.append(f"Endeksten {'güçlü' if yukari else 'zayıf'} (%{'+' if rs >= 0 else '−'}{sayi(abs(rs), 1)})")
@@ -857,6 +858,7 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
         stop = stop_ozel if stop_ozel else max(aday, c - 3 * atr)
         if stop >= c - 0.4 * atr:
             stop = c - 1.2 * atr
+        stop -= ad_["stop_ek"] * atr                      # hatalardan öğrenilen ek stop payı
         R = c - stop
         ustler = [x for x in tum_sev if x > c + 1.5 * R]
         hedef = ustler[0] if ustler else c + 2 * R
@@ -872,6 +874,7 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
         stop = stop_ozel if stop_ozel else min(aday, c + 3 * atr)
         if stop <= c + 0.4 * atr:
             stop = c + 1.2 * atr
+        stop += ad_["stop_ek"] * atr
         R = stop - c
         altlar = [x for x in tum_sev if x < c - 1.5 * R]
         hedef = altlar[-1] if altlar else c - 2 * R
@@ -883,7 +886,7 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
     engel_oran = 3.0
     if engel is not None and R > 0:
         engel_oran = abs(engel - c) / R
-        if engel_oran < 1.2:
+        if engel_oran < ad_["engel_esik"]:
             puan -= 14; eksi.append(f"Hemen {'üstte güçlü direnç' if yukari else 'altta güçlü destek'} ({sayi(engel)}) — yer dar")
         elif engel_oran < 1.5:
             puan -= 5; eksi.append(f"Yakında {'direnç' if yukari else 'destek'} var ({sayi(engel)})")
@@ -913,7 +916,8 @@ def puanla(ctx, i, yon, olay, sebepler, ref, hedef_ozel, stop_ozel, sev, prof, p
     return dict(tur="AL" if yukari else "SAT", yon=yon, guven=guven, guclu=bool(guclu),
                 sebepler=sebepler, arti=arti, eksi=eksi, fiyat=float(c), stop=float(stop),
                 hedef=float(hedef), hedef2=float(hedef2), hedef3=float(hedef3), rk=float(rk),
-                giris_alt=float(giris_alt), giris_ust=float(giris_ust), oz=oz)
+                giris_alt=float(giris_alt), giris_ust=float(giris_ust), oz=oz, ref=float(ref),
+                engel=float(engel) if engel is not None else None)
 
 
 def sinyal_bul(ctx, i):
@@ -937,6 +941,8 @@ def sinyal_bul(ctx, i):
     mum_al = any(y > 0 for _, y, _ in mum)
     mum_sat = any(y < 0 for _, y, _ in mum)
     olaylar = {}
+    ad_ = ADAPT.get(ctx["mod"]) or ADAPT_VARSAYILAN
+    kmin, krv = ad_["kirilim_min"], ad_["kirilim_rv"]
 
     def olay(anahtar, yon, puan, metin, seviye, hedef=None, stop=None, guc=0.5, aciklama="", kirilim=True):
         eski = olaylar.get(anahtar)
@@ -951,9 +957,9 @@ def sinyal_bul(ctx, i):
         ad = "Direnç" if "hacim" not in d["kaynak"] else "Hacim bölgesi"
         k = int(round((0.6 + 0.6 * g) * 22))
         # Kırılım: kapanış seviyenin belirgin üstünde, gövdesi dolu, hacimli
-        if cp < L_ and c > L_ * (1 + tol / 2) and c - L_ >= 0.15 * atr and yesil and govde_orani >= 0.45 and rv >= 1.1:
+        if cp < L_ and c > L_ * (1 + tol / 2) and c - L_ >= kmin * atr and yesil and govde_orani >= 0.45 and rv >= krv:
             olay("dk", 1, k, f"{ad} kırıldı ({sayi(L_)})", L_, guc=g, aciklama=ac)
-        elif cp > L_ and c < L_ * (1 - tol / 2) and L_ - c >= 0.15 * atr and kirmizi and govde_orani >= 0.45 and rv >= 1.1:
+        elif cp > L_ and c < L_ * (1 - tol / 2) and L_ - c >= kmin * atr and kirmizi and govde_orani >= 0.45 and rv >= krv:
             olay("dsk", -1, k, f"{'Destek' if ad == 'Direnç' else ad} kırıldı ({sayi(L_)})", L_, guc=g, aciklama=ac)
         # Dönüş: seviyeye değip geri dönen, üst/alt bölgesinde kapanan ve onay mumu ya da hacmi olan mum
         elif l <= L_ * (1 + tol) and c > L_ and cp >= L_ * (1 - tol) and yesil and c >= l + 0.6 * aralik and (mum_al or rv >= 1.3):
@@ -1030,6 +1036,83 @@ def sinyal_bul(ctx, i):
     return en_iyi, formlar
 
 
+# ---------- Hatalardan öğrenme: tutmayan sinyallerin nedenine göre kuralları kendiliğinden sıkılaştırır ----------
+ADAPT_VARSAYILAN = dict(stop_ek=0.0, kirilim_min=0.15, kirilim_rv=1.1, piyasa_ceza=8, engel_esik=1.2, hacim_ceza=10)
+ADAPT = {m: dict(ADAPT_VARSAYILAN, notlar=[], dagilim=[], n=0) for m in ("1", "5", "g", "w")}
+NEDEN_ADI = {"av": "Stop avlandı, sonra hedefe gitti (stop dar)", "sahte": "Sahte kırılım (fiyat seviyenin gerisine döndü)",
+             "engel": "Önündeki güçlü seviyeden döndü", "piyasa": "Piyasa (BIST100) ters döndü",
+             "hacim": "Hacim devam etmedi, fiyat hiç ilerlemedi", "gap": "Boşlukla (gap) stop oldu", "gurultu": "Normal dalgalanma"}
+KIRILIM_KURULUM = ("dk", "dsk", "yapi")
+
+
+def otopsi(ctx: dict, s: dict, n: int) -> str:
+    """Stop olan sinyalin neden tutmadığını bulur."""
+    A, i, yon, j = ctx["A"], s["i"], s["yon"], s.get("_j", s["i"] + 1)
+    f, stop, hedef = s["fiyat"], s["stop"], s["hedef"]
+    R = abs(f - stop) or 1e-9
+    if (yon > 0 and A["Open"][j] < stop) or (yon < 0 and A["Open"][j] > stop):
+        return "gap"
+    son = min(j + 1 + TEST_UFKU, n)
+    if son > j + 1 and ((yon > 0 and A["High"][j + 1:son].max() >= hedef) or (yon < 0 and A["Low"][j + 1:son].min() <= hedef)):
+        return "av"
+    ref = s.get("ref")
+    kirilim = s.get("kurulum", "") in KIRILIM_KURULUM or s.get("kurulum", "").startswith("f-")
+    if kirilim and ref and any((A["Close"][k] - ref) * yon < 0 for k in range(i + 1, min(i + 4, j + 1))):
+        return "sahte"
+    en_iyi = A["High"][i + 1:j + 1].max() if yon > 0 else A["Low"][i + 1:j + 1].min()
+    engel = s.get("engel")
+    if engel and abs(en_iyi - engel) / engel <= ctx["tol"] * 1.5:
+        return "engel"
+    if ctx["py"][i] * yon >= 0 and ctx["py"][j] * yon < 0:
+        return "piyasa"
+    if (en_iyi - f) * yon < 0.3 * R and np.nanmean(A["RVOL"][i + 1:j + 1]) < 1.0:
+        return "hacim"
+    return "gurultu"
+
+
+def hatalardan_ogren(sinyaller: list[dict], mod: str):
+    """Tutmayan sinyallerin nedenlerini sayar; sık görülen hataya göre ilgili kuralı sıkılaştırır (yumuşak geçişle)."""
+    stoplar = [s for s in sinyaller if s["sonuc"] == "stop" and s.get("neden")]
+    eski = ADAPT.get(mod) or dict(ADAPT_VARSAYILAN)
+    if len(stoplar) < 30:
+        ADAPT[mod] = dict(eski, n=len(stoplar), notlar=["Henüz yeterli hata örneği yok (en az 30 stop gerekli)."], dagilim=[])
+        return
+    say = {}
+    for s in stoplar:
+        say[s["neden"]] = say.get(s["neden"], 0) + 1
+    pay = {k: v / len(stoplar) for k, v in say.items()}
+    hedef = dict(ADAPT_VARSAYILAN)
+    notlar = []
+    if pay.get("av", 0) > 0.25:
+        hedef["stop_ek"] = min(0.8, (pay["av"] - 0.15) * 2)
+    if pay.get("sahte", 0) > 0.25:
+        hedef["kirilim_min"] = 0.15 + min(0.3, pay["sahte"] - 0.15)
+        hedef["kirilim_rv"] = 1.3
+    if pay.get("piyasa", 0) > 0.2:
+        hedef["piyasa_ceza"] = 16
+    if pay.get("engel", 0) > 0.2:
+        hedef["engel_esik"] = 1.6
+    if pay.get("hacim", 0) > 0.25:
+        hedef["hacim_ceza"] = 18
+    yeni = {k: round(0.5 * eski.get(k, v) + 0.5 * hedef[k], 3) for k, v in ADAPT_VARSAYILAN.items()}   # ani sıçrama yok
+    yuz = lambda k: f"%{pay.get(k, 0) * 100:.0f}"  # noqa: E731
+    if yeni["stop_ek"] >= 0.05:
+        notlar.append(f"Stop avı payı {yuz('av')}: stop olup sonra hedefe giden çok → stoplar {sayi(yeni['stop_ek'], 2)} ATR geriye alındı.")
+    if yeni["kirilim_min"] > 0.17:
+        notlar.append(f"Sahte kırılım payı {yuz('sahte')} → kırılım için kapanış en az {sayi(yeni['kirilim_min'], 2)} ATR ötede ve hacim {sayi(yeni['kirilim_rv'], 1)}x şartı.")
+    if yeni["piyasa_ceza"] > 9:
+        notlar.append(f"Piyasa dönüşü payı {yuz('piyasa')} → BIST100 ters yöndeyken ceza {yeni['piyasa_ceza']:.0f} puana çıkarıldı.")
+    if yeni["engel_esik"] > 1.25:
+        notlar.append(f"Önündeki seviyeden dönüş payı {yuz('engel')} → hedefe kadar en az {sayi(yeni['engel_esik'], 1)}R boş alan aranıyor.")
+    if yeni["hacim_ceza"] > 11:
+        notlar.append(f"Hacimsiz sinyal payı {yuz('hacim')} → zayıf hacme ceza {yeni['hacim_ceza']:.0f} puana çıkarıldı.")
+    if not notlar:
+        notlar.append("Hatalar dağınık, belirgin bir zayıf nokta yok; kurallar aynen korunuyor.")
+    yeni.update(n=len(stoplar), notlar=notlar,
+                dagilim=[[NEDEN_ADI[k], round(v * 100)] for k, v in sorted(pay.items(), key=lambda x: -x[1])])
+    ADAPT[mod] = yeni
+
+
 # ---------- Öğrenen model: geçmiş sinyallerden hangi koşulların işe yaradığını öğrenir ----------
 MODEL = {"1": None, "5": None, "g": None, "w": None}
 
@@ -1101,11 +1184,13 @@ def sonuc_hesapla(A, s, n):
     for j in range(i + 1, min(i + 1 + TEST_UFKU, n)):
         if yon > 0:
             if A["Low"][j] <= s["stop"]:
+                s["_j"] = j
                 return "stop", s["stop"] / f - 1
             if A["High"][j] >= s["hedef"]:
                 return "hedef", s["hedef"] / f - 1
         else:
             if A["High"][j] >= s["stop"]:
+                s["_j"] = j
                 return "stop", (f - s["stop"]) / f
             if A["Low"][j] <= s["hedef"]:
                 return "hedef", (f - s["hedef"]) / f
@@ -1140,6 +1225,11 @@ def sinyalleri_tara(ctx, bas: int) -> list[dict]:
         if s:
             s["i"], s["zaman"] = i, df.index[i]
             s["sonuc"], s["getiri"] = sonuc_hesapla(A, s, n)
+            if s["sonuc"] == "stop":
+                try:
+                    s["neden"] = otopsi(ctx, s, n)
+                except Exception:  # noqa: BLE001
+                    s["neden"] = "gurultu"
             out.append(s)
     return out
 
@@ -1509,6 +1599,9 @@ nav.alt .rz{top:0;right:calc(50% - 22px)}
 .dtf{display:flex;gap:6px;padding:14px 16px 0}.dtf .chip{flex:1}
 .legend{padding:10px 16px 0;height:28px;font-size:11px;color:var(--mu);white-space:nowrap;overflow:hidden;font-weight:600}.legend b{color:var(--tx)}
 #grafik{height:310px}
+.bantkat{position:absolute;inset:0;pointer-events:none;z-index:3;overflow:hidden}
+.bant{position:absolute;left:0;border-top:1px solid;border-bottom:1px solid;transition:top .15s,height .15s}
+.bant span{position:absolute;left:6px;top:50%;transform:translateY(-50%);font-size:9.5px;font-weight:800;color:#06121a;padding:1px 6px;border-radius:6px;white-space:nowrap;letter-spacing:.02em}
 .gsec{display:flex;gap:6px;padding:8px 16px 0;overflow-x:auto;scrollbar-width:none}.gsec::-webkit-scrollbar{display:none}.gsec .chip{padding:6px 10px;font-size:11.5px}
 .ayr{width:1px;background:var(--ln);flex:none;margin:4px 2px}
 .dp{padding:0 16px}
@@ -1573,7 +1666,7 @@ const iki=v=>String(v).padStart(2,'0');
 const tarihYaz=(t,g)=>{const d=new Date(t*1000);return g?`${iki(d.getUTCDate())}.${iki(d.getUTCMonth()+1)} ${iki(d.getUTCHours())}:${iki(d.getUTCMinutes())}`:`${iki(d.getUTCDate())}.${iki(d.getUTCMonth()+1)}.${d.getUTCFullYear()}`};
 const saatYaz=(t,m)=>{const d=new Date(t*1000);return m==='w'?`${iki(d.getUTCDate())}.${iki(d.getUTCMonth()+1)}`:`${iki(d.getUTCHours())}:${iki(d.getUTCMinutes())}`};
 const coz=(o,g)=>{if(!o)return;let t=o.m.t0;o.m=o.m.d.map(x=>{t+=x[0]*60;return[t,x[1]/100,x[2]/100,x[3]/100,x[4]/100,x[5]]});
-  o.sin=o.sin.map(a=>({t:a[0],yon:a[1],tur:a[1]>0?'AL':'SAT',guven:a[2],guclu:!!a[3],fiyat:a[4],sonuc:a[5],getiri:a[6],saat:tarihYaz(a[0],g)}))};
+  o.sin=o.sin.map(a=>({t:a[0],yon:a[1],tur:a[1]>0?'AL':'SAT',guven:a[2],guclu:!!a[3],fiyat:a[4],sonuc:a[5],getiri:a[6],neden:a[7]||null,saat:tarihYaz(a[0],g)}))};
 V.hisseler.forEach(h=>MODLAR.forEach(m=>coz(h[m],m!=='w')));
 const H=Object.fromEntries(V.hisseler.map(h=>[h.s,h]));
 const $=s=>document.querySelector(s);
@@ -1928,11 +2021,18 @@ function ekranProfil(){const K=V.karne[M]||[];const l=liste_.filter(h=>fav.has(h
    <label><span class="lbl">Min. günlük işlem</span><select id="a_lik">${[20,30,100,300].map(v=>`<option value="${v}"${ayar.lik==v?' selected':''}>${v} mn ₺</option>`).join('')}</select></label>
    <label><span class="lbl">Tema</span><select id="a_tema"><option value="koyu"${ayar.tema==='koyu'?' selected':''}>Koyu</option><option value="acik"${ayar.tema==='acik'?' selected':''}>Açık</option></select></label></div>
   <div class="bolum"><h3>Favoriler</h3><span class="lbl">${l.length}</span></div>`+(l.length?`<div class="kart liste">${l.map(h=>satirH(h,'Bot: '+gorus(h,M).tur)).join('')}</div>`:`<div class="bos">Hisse detayında ☆ ile ekle</div>`)+
-  modelKart()+`<div class="bolum"><h3>Kurulum karnesi · ${GOSTER[M]}</h3></div><p class="acik-not">Sinyal türlerinin geçmiş testte tutma oranı. En az 15 örneği olan türlerde güven puanı otomatik ayarlanır.</p>`+
+  ogrenKart()+modelKart()+`<div class="bolum"><h3>Kurulum karnesi · ${GOSTER[M]}</h3></div><p class="acik-not">Sinyal türlerinin geçmiş testte tutma oranı. En az 15 örneği olan türlerde güven puanı otomatik ayarlanır.</p>`+
   (K.length?`<div class="kart"><table class="tbl"><tr><th>Kurulum</th><th>Adet</th><th>İsabet</th><th>Ayar</th></tr>${K.map(k=>`<tr><td>${esc(k.ad)}</td><td>${k.n}</td><td class="${(k.isabet||0)>=40?'up':'dn'}">${k.isabet==null?'—':'%'+k.isabet}</td><td class="${k.bonus>0?'up':k.bonus<0?'dn':'mu'}">${k.bonus>0?'+':''}${k.bonus}</td></tr>`).join('')}</table></div>`:`<div class="bos">Karne hazırlanıyor</div>`)+
   `<div class="bolum"><h3>Zaman dilimleri ve vade</h3></div><div class="kart"><table class="tbl"><tr><th>Grafik</th><th>Vade</th><th>Süre</th></tr>${MODLAR.map(m=>`<tr><td>${GOSTER[m]}</td><td>${V.vade[m].ad}</td><td>${V.vade[m].sure}</td></tr>`).join('')}</table></div>
   <p class="not">1 ve 5 dk analizleri en likit ${V.hisseler.filter(h=>h.hizli).length} hissede yapılır. Veriler Yahoo Finance'tan ~15 dk gecikmeli gelir. Son tarama ${V.guncelleme}${V.derin?', son derin test '+V.derin:''}. Yatırım tavsiyesi değildir.</p>`}
 
+function ogrenKart(){const a=(V.adapt||{})[M];
+  let x=`<div class="bolum"><h3>Hatalarından öğrendikleri · ${GOSTER[M]}</h3>${a&&a.n?`<span class="lbl">${a.n} stop incelendi</span>`:''}</div>`;
+  if(!a)return x+`<div class="bos">İlk derin taramadan sonra hazırlanır.</div>`;
+  x+=`<div class="kart pad"><p class="acik-not" style="margin:0 0 6px">Tutmayan her sinyal incelenir: sahte kırılım mı, stop mu dardı, piyasa mı döndü, dirence mi çarptı? En sık hataya göre ilgili kural otomatik sıkılaştırılır.</p>`;
+  if(a.dagilim&&a.dagilim.length)x+=`<div class="bilesen">${a.dagilim.map(([ad,p])=>`<div><div class="ust3"><span class="mu">${esc(ad)}</span><span>%${p}</span></div><div class="bar"><i style="width:${p}%;background:linear-gradient(90deg,var(--wa),var(--dn))"></i></div></div>`).join('')}</div>`;
+  x+=`<div class="lbl" style="margin:16px 0 6px">Yapılan ayarlar</div>${(a.notlar||[]).map(n=>`<div class="satir" style="align-items:flex-start;padding:5px 0;font-size:13px;font-weight:600;flex-wrap:nowrap"><span style="color:var(--acT);font-weight:800">✦</span><span>${esc(n)}</span></div>`).join('')}`;
+  return x+`</div>`}
 function modelKart(){const m=(V.model||{})[M];
   let x=`<div class="bolum"><h3>Öğrenen model · ${GOSTER[M]}</h3>${m&&m.aktif?'<span class="rozet up">Aktif</span>':'<span class="rozet">Beklemede</span>'}</div>`;
   if(!m)return x+`<div class="bos">Model ilk derin taramadan sonra eğitilir.</div>`;
@@ -2029,12 +2129,21 @@ function grafikKur(h,m){if(chart){chart.remove();chart=null}const el=$('#grafik'
   const kp=md.map(x=>x[4]);const e20=cz('#22d3ee'),e50=cz('#a99bff');e20.setData(ema(kp,20).map((v,i)=>({time:zam[i],value:v})));e50.setData(ema(kp,50).map((v,i)=>({time:zam[i],value:v})));
   const vw=cz('#ffb547',1.5,2);if(m!=='w')vw.setData(vwapHesap(md).map((v,i)=>({time:zam[i],value:v})));
   const fs=[];o.form.forEach(f=>f.cizgiler.forEach(c=>{const s=cz(f.yon<0?'#ff8aa0':'#a99bff',2);s.setData([{time:c[0],value:c[1]},{time:c[2],value:c[3]}]);fs.push(s)}));
-  let cl=[];const lo=Math.min(...md.map(x=>x[3]))*.97,hi=Math.max(...md.map(x=>x[2]))*1.03;
+  let cl=[],bantlar=[];const lo=Math.min(...md.map(x=>x[3]))*.97,hi=Math.max(...md.map(x=>x[2]))*1.03;
+  el.style.position='relative';const kat=document.createElement('div');kat.className='bantkat';el.appendChild(kat);
+  const yari=Math.max(0.0015,(o.atr||0.6)/100*0.22);   // bant yarı kalınlığı: hissenin oynaklığına göre
+  function bantCiz(){if(!chart||typeof mum.priceToCoordinate!=='function'){kat.innerHTML='';return}
+    const sag=(chart.priceScale('right').width&&chart.priceScale('right').width())||56,H=el.clientHeight-26;
+    kat.innerHTML=bantlar.map(s=>{const y1=mum.priceToCoordinate(s[0]*(1+yari)),y2=mum.priceToCoordinate(s[0]*(1-yari));if(y1==null||y2==null)return'';
+      const ust=Math.min(y1,y2),boy=Math.max(4,Math.abs(y2-y1));if(ust>H||ust+boy<0)return'';const g=s[2]||0,d=s[1]==='D',r=d?'47,224,160':'255,92,124';
+      return `<div class="bant" style="top:${ust}px;height:${boy}px;right:${sag}px;background:rgba(${r},${(0.07+0.16*g).toFixed(2)});border-color:rgba(${r},${(0.35+0.5*g).toFixed(2)})">
+        <span style="background:rgba(${r},.9)">${d?'Destek':'Direnç'}${s[3]>1?' · '+s[3]+' test':''}${g>=0.7?' · güçlü':''}</span></div>`}).join('')}
+  chart.timeScale().subscribeVisibleLogicalRangeChange(()=>requestAnimationFrame(bantCiz));
   function uyg(){[e20,e50].forEach(s=>s.applyOptions({visible:gor.ema}));vw.applyOptions({visible:gor.vwap&&m!=='w'});fs.forEach(s=>s.applyOptions({visible:gor.form}));
     cl.forEach(p=>mum.removePriceLine(p));cl=[];const ek=x=>cl.push(mum.createPriceLine(Object.assign({lineWidth:1,axisLabelVisible:false},x)));
-    if(gor.sev){const al=o.sev.filter(s=>s[1]==='D'&&s[0]>lo).sort((a,b)=>b[0]-a[0]).slice(0,3),us=o.sev.filter(s=>s[1]==='R'&&s[0]<hi).sort((a,b)=>a[0]-b[0]).slice(0,3);
-      [...al,...us].forEach(s=>{const g=s[2]||0;ek({price:s[0],color:(s[1]==='D'?'rgba(47,224,160,':'rgba(255,92,124,')+(0.35+0.55*g).toFixed(2)+')',lineStyle:g>=0.7?0:2,lineWidth:g>=0.7?2:1,
-        title:(s[1]==='D'?'D':'R')+(s[3]>1?' '+s[3]+'x':''),axisLabelVisible:g>=0.7})})}
+    bantlar=[];if(gor.sev){const al=o.sev.filter(s=>s[1]==='D'&&s[0]>lo).sort((a,b)=>b[0]-a[0]).slice(0,3),us=o.sev.filter(s=>s[1]==='R'&&s[0]<hi).sort((a,b)=>a[0]-b[0]).slice(0,3);
+      bantlar=[...al,...us];bantlar.forEach(s=>{if((s[2]||0)>=0.6)ek({price:s[0],color:s[1]==='D'?'#2fe0a0':'#ff5c7c',lineVisible:false,axisLabelVisible:true,title:''})})}
+    requestAnimationFrame(bantCiz);
     if(gor.prof&&o.prof){ek({price:o.prof.poc,color:'#ffb547',lineStyle:0,title:'POC',axisLabelVisible:true});ek({price:o.prof.vah,color:'rgba(139,147,167,.5)',lineStyle:1,title:'VAH'});ek({price:o.prof.val,color:'rgba(139,147,167,.5)',lineStyle:1,title:'VAL'})}
     const s=o.akt;if(gor.plan&&s){ek({price:s.stop,color:DN,lineStyle:0,title:'SL',axisLabelVisible:true});ek({price:s.giris_ust,color:'#7c6cff',lineStyle:2,title:'GİRİŞ'});ek({price:s.giris_alt,color:'#7c6cff',lineStyle:2});
       [s.hedef,s.hedef2,s.hedef3].forEach((p,i)=>ek({price:p,color:`rgba(47,224,160,${1-i*.25})`,lineStyle:0,title:'H'+(i+1),axisLabelVisible:i===0}))}
@@ -2050,7 +2159,8 @@ function grafikKur(h,m){if(chart){chart.remove();chart=null}const el=$('#grafik'
   const ix=Object.fromEntries(md.map((x,i)=>[x[0],i]));
   const lg=i=>{const x=md[i];if(!x)return'';const d=dl[i];return `A <b>${tl(x[1])}</b> Y <b>${tl(x[2])}</b> D <b>${tl(x[3])}</b> K <b class="${x[4]>=x[1]?'up':'dn'}">${tl(x[4])}</b> · Hac <b>${tl(x[5],0)}</b> · <span class="${d>=0?'up':'dn'}">alıcı %${tl((1+d/(x[5]||1))*50,0)}</span>`};
   $('#legend').innerHTML=lg(n-1);chart.subscribeCrosshairMove(p=>{$('#legend').innerHTML=lg(p&&p.time!=null&&ix[p.time]!=null?ix[p.time]:n-1)});
-  if(ro)ro.disconnect();ro=new ResizeObserver(()=>chart&&chart.applyOptions({width:el.clientWidth}));ro.observe(el)}
+  if(ro)ro.disconnect();ro=new ResizeObserver(()=>{if(chart){chart.applyOptions({width:el.clientWidth});requestAnimationFrame(bantCiz)}});ro.observe(el);
+  el.addEventListener('touchmove',()=>requestAnimationFrame(bantCiz),{passive:true});el.addEventListener('wheel',()=>requestAnimationFrame(bantCiz),{passive:true})}
 
 function sekmeCiz(){document.querySelectorAll('#sekmeler button').forEach(b=>b.classList.toggle('on',b.dataset.s===sekme));const o=H[secili][DM],m=DM;let x='';
   if(sekme==='analiz'){const s=o.akt;
@@ -2083,7 +2193,9 @@ function sekmeCiz(){document.querySelectorAll('#sekmeler button').forEach(b=>b.c
   else{const l=[...o.sinF].reverse(),bit=l.filter(s=>s.sonuc!=='açık'),hd=bit.filter(s=>s.sonuc==='hedef').length,st=bit.filter(s=>s.sonuc==='stop').length;
     x+=`<div class="istat"><div><span class="lbl">Sinyal</span><b>${l.length}</b></div><div><span class="lbl">Hedef / stop</span><b><span class="up">${hd}</span> / <span class="dn">${st}</span></b></div><div><span class="lbl">İsabet</span><b>${hd+st?'%'+tl(hd/(hd+st)*100,0):'—'}</b></div></div>`;
     x+=l.length?`<div class="kart" style="margin-top:12px"><table class="tbl"><tr><th>Zaman</th><th>Yön</th><th>Gv</th><th>Sonuç</th></tr>${l.slice(0,20).map(s=>`<tr><td>${s.saat}</td><td><span class="yon ${s.yon>0?'al':'sat'}">${s.tur}</span></td><td>${s.guven}</td>
-      <td class="${s.sonuc==='hedef'?'up':s.sonuc==='stop'?'dn':'mu'}">${esc(s.sonuc)} ${yz(s.getiri,1)}</td></tr>`).join('')}</table></div>`:`<div class="bos" style="margin-top:12px">Sinyal yok</div>`;
+      <td class="${s.sonuc==='hedef'?'up':s.sonuc==='stop'?'dn':'mu'}">${esc(s.sonuc)} ${yz(s.getiri,1)}</td></tr>${s.neden&&V.neden_adi?`<tr><td colspan="4" style="padding-top:0;white-space:normal;text-align:left;font-size:11.5px;color:var(--mu)">↳ Neden tutmadı: <b style="color:var(--wa)">${esc(V.neden_adi[s.neden]||s.neden)}</b></td></tr>`:''}`).join('')}</table></div>`:`<div class="bos" style="margin-top:12px">Sinyal yok</div>`;
+    const nd={};bit.filter(s=>s.neden).forEach(s=>nd[s.neden]=(nd[s.neden]||0)+1);const ndl=Object.entries(nd).sort((a,b)=>b[1]-a[1]);
+    if(ndl.length&&V.neden_adi)x+=`<div class="bolum"><h3>Bu hissede neden tutmadı?</h3></div><div class="kart pad bilesen" style="padding-top:4px">${ndl.map(([k,v])=>`<div><div class="ust3"><span class="mu">${esc(V.neden_adi[k]||k)}</span><span>${v}</span></div><div class="bar"><i style="width:${v/st*100}%;background:linear-gradient(90deg,var(--wa),var(--dn))"></i></div></div>`).join('')}</div>`;
     x+=`<p class="not">Her sinyalden sonra ${V.ufuk} ${birim(m)} içinde önce H1'e mi stopa mı gidildiğine bakıldı. Hedefler riskin en az 1,5 katı olduğu için ~%40 isabet başabaştır; %40'ın üstü kârlı demektir. Yani %45 isabet düşük değil, kazandıran bir orandır.</p>`}
   $('#sekme').innerHTML=x}
 $('#sekmeler').onclick=e=>{const b=e.target.closest('button');if(!b)return;sekme=b.dataset.s;D.set('sekme',sekme);sekmeCiz()};
@@ -2128,7 +2240,7 @@ def sinyal_json(s: dict, df: pd.DataFrame, n: int, fiyat: float, mod: str) -> di
         sebepler=s["sebepler"], arti=s["arti"], eksi=s["eksi"],
         fiyat=_r(s["fiyat"], 4), stop=_r(s["stop"], 4), hedef=_r(s["hedef"], 4), hedef2=_r(s["hedef2"], 4),
         hedef3=_r(s["hedef3"], 4), giris_alt=_r(ga, 4), giris_ust=_r(gu, 4), rk=_r(s["rk"], 1),
-        sonuc=s["sonuc"], getiri=_r(s["getiri"] * 100, 2), ilerleme=_r(min(max(ilerleme, 0), 1), 3), durum=durum,
+        sonuc=s["sonuc"], getiri=_r(s["getiri"] * 100, 2), neden=s.get("neden"), ilerleme=_r(min(max(ilerleme, 0), 1), 3), durum=durum,
         risk=_r(abs(s["fiyat"] - s["stop"]) / s["fiyat"] * 100, 2),
         pot=[yuzde(s["hedef"]), yuzde(s["hedef2"]), yuzde(s["hedef3"])],
         en_iyi=yuzde(en_iyi), kalan=max(TEST_UFKU - (n - 1 - s["i"]), 0),
@@ -2139,8 +2251,8 @@ def sinyal_json(s: dict, df: pd.DataFrame, n: int, fiyat: float, mod: str) -> di
 
 
 def kompakt(x: dict) -> list:
-    """Geçmiş sinyaller için sıkıştırılmış satır: [zaman, yön, güven, güçlü, fiyat, sonuç, getiri%]"""
-    return [x["t"], x["yon"], x["guven"], int(x["guclu"]), x["fiyat"], x["sonuc"], x["getiri"]]
+    """Geçmiş sinyaller için sıkıştırılmış satır: [zaman, yön, güven, güçlü, fiyat, sonuç, getiri%, tutmama nedeni]"""
+    return [x["t"], x["yon"], x["guven"], int(x["guclu"]), x["fiyat"], x["sonuc"], x["getiri"], x.get("neden")]
 
 
 def mod_json(a: dict, eski_sin: list | None) -> dict:
@@ -2916,6 +3028,7 @@ class Servis:
                     self.derin_sin[mod][h] = [kompakt(sinyal_json(s_, df, n, a["fiyat"], mod)) for s_ in f]
                 self.karne[mod], AGIRLIK[mod] = karne_hesapla(tum)
                 self.bot[mod] = bot_portfoyu(tum)
+                hatalardan_ogren(tum, mod)
                 try:
                     MODEL[mod] = model_egit(tum)
                 except Exception as e:  # noqa: BLE001
@@ -2961,6 +3074,7 @@ class Servis:
             hisseler.append(kayit)
         akis = akis_olaylari(analiz)
         paket = dict(hisseler=hisseler, akis=akis, vade=VADE, dilim=DILIM_ADI, bist=bist, sektorler=sektor_ozeti(analiz["g"]), karne=self.karne, bot=self.bot,
+                     adapt={m: {k: ADAPT[m].get(k) for k in ("n", "notlar", "dagilim", "stop_ek", "kirilim_min")} for m in MODLAR}, neden_adi=NEDEN_ADI,
                      model={m: (None if not MODEL[m] else {k: MODEL[m].get(k) for k in ("aktif", "n", "auc", "oran", "onemli", "neden")}) for m in MODLAR},
                      seans=acik, guncelleme=f"{dt.datetime.now(TZ):%H:%M}", taranan=len(TUM_HISSELER),
                      likit=len(likitler), ufuk=TEST_UFKU, esik=ESIK,
