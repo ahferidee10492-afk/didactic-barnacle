@@ -3094,8 +3094,8 @@ class CanliBot:
                     for s in filtrele(an["sinyaller"], ESIK)[-2:]:
                         if s["yon"] <= 0 or s["sonuc"] != "açık":
                             continue
-                        if n - 1 - s["i"] > 1:
-                            continue                              # eski sinyal (sadece son 2 mum)
+                        if n - 1 - s["i"] > {"1": 6, "5": 2}.get(mod, 1):
+                            continue                              # eski sinyal (1 dk: son 7, 5 dk: son 3, diğer: son 2 mum)
                         tani["sinyal"] += 1
                         if s["guven"] < a["guven"]:
                             ekle("guven"); continue
@@ -3108,7 +3108,11 @@ class CanliBot:
                         f = float(an["fiyat"])
                         if anahtar in gorulen:
                             ekle("gorulen"); continue
-                        if f <= s["stop"] or not (s["giris_alt"] * 0.998 <= f <= s["giris_ust"] * 1.003):
+                        atr_i = nanv(ctx["A"]["ATR"][n - 1], f * 0.01)
+                        # Gecikmeli veri yüzünden fiyat biraz kaçmış olabilir: 0,35 ATR'ye kadar tolerans, ama H1'e kalan
+                        # kazanç kalan riskten az olmamalı
+                        kalan_kz = (s["hedef"] - f) / max(f - s["stop"], 1e-9)
+                        if f <= s["stop"] or f < s["giris_alt"] - 0.1 * atr_i or f > s["giris_ust"] + 0.35 * atr_i or kalan_kz < 1.0:
                             ekle("aralik"); continue
                         adaylar.append((KALITE_SIRA[j["kalite"]], -s["guven"], h, s, j, anahtar, an))
                 adaylar.sort(key=lambda x: (x[0], x[1]))
@@ -3459,15 +3463,29 @@ class Servis:
                 .replace("__VERI__", self.veri))
 
     def _dongu(self):
+        """Hızlı tarama + bot sürekli döner; uzun süren derin geçmiş testi AYRI iş parçacığında çalışır,
+        böylece seans içinde botu bekletmez."""
+        self._derin_calisiyor = False
         while True:
             try:
                 self._tur(derin=False)
-                if time.time() - self.derin_zaman > 1800:
-                    self._tur(derin=True)
                 self.hata = None
             except Exception as e:  # noqa: BLE001
                 self.hata = f"{type(e).__name__}: {e}"
-            time.sleep(120 if seans_acik_mi() else 900)
+            acik = seans_acik_mi()
+            aralik = 7200 if acik else 1800          # seans içinde derin test 2 saatte bir, dışında yarım saatte bir
+            if not self._derin_calisiyor and time.time() - self.derin_zaman > aralik:
+                self._derin_calisiyor = True
+                threading.Thread(target=self._derin_is, daemon=True).start()
+            time.sleep(45 if acik else 900)
+
+    def _derin_is(self):
+        try:
+            self._tur(derin=True)
+        except Exception as e:  # noqa: BLE001
+            self.hata = f"Derin test: {type(e).__name__}: {e}"
+        finally:
+            self._derin_calisiyor = False
 
     def _tur(self, derin: bool):
         acik = seans_acik_mi()
@@ -3526,6 +3544,7 @@ class Servis:
                 except Exception as e:  # noqa: BLE001
                     MODEL[mod] = dict(aktif=False, n=0, auc=None, neden=f"eğitim hatası: {e}")
             self.derin_zaman = time.time()
+            return                                   # derin test sadece karne/model/öğrenmeyi günceller; botu ve sayfayı hızlı tarama besler
 
         bist = None
         rejim = "Yatay"
