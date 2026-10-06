@@ -1758,6 +1758,31 @@ main{flex:1;overflow-y:auto;padding:6px 16px 110px;-webkit-overflow-scrolling:to
 @media (prefers-reduced-motion:reduce){.bant2 .yol2{animation:none}.ilk .cini *{animation:none!important}}
 #grafik.acil{animation:grafikAc .9s cubic-bezier(.3,.7,.2,1) both}
 @keyframes grafikAc{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+
+/* öğrenen beyin */
+.beyin{padding:16px}
+.beyin .sev{display:flex;align-items:center;gap:12px}
+.beyin .rozet2{width:52px;height:52px;border-radius:16px;background:var(--ac);color:var(--acInk);display:grid;place-items:center;font:800 20px var(--disp);flex:none;position:relative}
+.beyin .rozet2 small{position:absolute;bottom:-6px;right:-6px;background:var(--tx);color:var(--bg);font:800 10px var(--govde);padding:2px 6px;border-radius:8px}
+.beyin .sev b{display:block;font:700 17px var(--disp)}.beyin .sev .alt3{font-size:12.5px;color:var(--mu);font-weight:600}
+.beyin .ilerle2{height:8px;border-radius:5px;background:var(--card2);margin:14px 0 6px;overflow:hidden}
+.beyin .ilerle2 i{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--ac),var(--up));transform-origin:left;animation:uza 1.2s cubic-bezier(.2,.8,.2,1) both}
+.beyin .dort{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px}
+.beyin .dort div{background:var(--card2);border-radius:12px;padding:8px 9px}.beyin .dort b{display:block;font-size:15px;font-weight:800}.beyin .dort small{font-size:10.5px;color:var(--mu);font-weight:700;line-height:1.25;display:block}
+.kars{display:grid;gap:9px;margin-top:4px}
+.kars>div{display:grid;grid-template-columns:118px 1fr 62px;align-items:center;gap:8px;font-size:12.5px;font-weight:700}
+.kars .cb{position:relative;height:16px;background:var(--card2);border-radius:5px}
+.kars .cb i{position:absolute;top:0;bottom:0;border-radius:5px;transform-origin:left;animation:uza 1s both}
+.kars .cb::after{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1.5px;background:var(--mu2)}
+.ders{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--ln2);align-items:flex-start}.ders:last-child{border-bottom:0}
+.ders .di{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;flex:none;font-size:14px;font-weight:900}
+.ders .di.up{background:var(--ups);color:var(--up)}.ders .di.dn{background:var(--dns);color:var(--dn)}
+.ders b{display:block;font-size:13.5px;font-weight:700;line-height:1.35}.ders small{display:block;font-size:12px;color:var(--mu);font-weight:600;margin-top:2px}
+.hafta{display:flex;align-items:flex-end;gap:5px;height:90px;margin-top:10px;position:relative}
+.hafta>div{flex:1;display:flex;gap:2px;align-items:flex-end;height:100%;position:relative}
+.hafta i{flex:1;border-radius:3px 3px 0 0;transform-origin:bottom;animation:yuksel2 .9s both}
+@keyframes yuksel2{from{transform:scaleY(0)}}
+.hafta span{position:absolute;bottom:-17px;left:0;right:0;text-align:center;font-size:9.5px;color:var(--mu2);font-weight:700}
 /* panel */
 .hero{padding:18px 18px 0}
 .hero .alan{height:96px;margin:6px -18px 0;width:calc(100% + 36px)}
@@ -2343,7 +2368,7 @@ function ekranBot(){const a=B.ayar,kz=B.kz||0;
     <div class="sat1"><div class="botbas">${BOTIK}<div><b>Canlı Bot</b><small>${GOSTER[a.dilim]}${a.hizli&&a.dilim==='g'?' + 5 dk':''} · ${V.vade[a.dilim].ad} · ${B.baslangic}'ten beri</small></div></div><span class="rozet ${durum[0]}"><i class="nokta ${durum[1]}"></i>${durum[2]}</span></div>
     <div class="lbl" style="margin-top:18px">Toplam değer · ${tl(a.butce,0)} TL sanal bütçe</div>
     <div class="buyuk n">${say(B.ozk,0,'','')} <span style="font-size:22px;color:var(--mu)">TL</span></div>
-    <div class="satir" style="margin-top:6px"><span class="rozet ${yon(kz)}">${kz>=0?'▲':'▼'} ${tlk(kz)} · ${yz(B.kz_yuzde)}</span>${B.bist!=null?`<span class="rozet">BIST100 aynı dönem ${yz(B.bist)}</span>`:''}</div></div>
+    <div class="satir" style="margin-top:6px"><span class="rozet ${yon(kz)}">${kz>=0?'▲':'▼'} ${tlk(kz)} · ${yz(B.kz_yuzde)}</span>${B.bist!=null?`<span class="rozet">BIST100 aynı dönem ${yz(B.bist)}</span>`:''}${B.ogren?`<span class="rozet" data-bt="analiz" style="cursor:pointer">🧠 ${B.ogren.seviye.ad} · ${tl(B.ogren.n,0)} ders</span>`:''}</div></div>
    <div id="botGrafik"></div>
    ${botDurum()}
    <div class="botalt"><div><small>Bugün</small><b>${B.bugun.islem}<span class="mu" style="font-size:12px">/${a.gunluk}</span></b><small>işlem</small></div><div><small>Açık</small><b>${B.poz.length}<span class="mu" style="font-size:12px">/${a.acik}</span></b><small>pozisyon</small></div><div><small>Nakit</small><b>${tl(B.nakit,0)}</b><small>TL</small></div></div>
@@ -2430,11 +2455,34 @@ function yarisGrafikKur(){if(yarisChart){yarisChart.remove();yarisChart=null}con
   (B.yaris||[]).forEach((r,i)=>{const d=(r.egri||[]).filter((x,k,a)=>!k||x[0]>a[k-1][0]);if(d.length<2)return;
     const s=yarisChart.addLineSeries({color:YRENK[i],lineWidth:i===0?3:2,priceLineVisible:false,lastValueVisible:false});s.setData(d.map(x=>({time:x[0]+10800,value:x[1]})))});
   yarisChart.timeScale().fitContent()}
+function beyinKart(){const O=B.ogren;if(!O)return '';const S=O.seviye,Rf=v=>v==null?'—':(v>=0?'+':'−')+tl(Math.abs(v),2)+'R';
+  let x=`<div class="bolum" style="margin-top:4px"><h3>Botun beyni</h3><span class="lbl">her sinyalden ders çıkarır</span></div><div class="kart beyin">
+   <div class="sev"><span class="rozet2">${S.no}<small>sv</small></span><div><b>${esc(S.ad)}</b><span class="alt3">${tl(O.n,0)} ders${S.sonraki?` · ${esc(SEV_AD[S.no]||'')} için ${tl(S.sonraki-O.n,0)} ders daha`:' · en üst seviye'}</span></div></div>
+   <div class="ilerle2"><i style="width:${Math.round(S.oran*100)}%"></i></div>
+   <div class="dort"><div><b>${tl(O.n-O.canli,0)}</b><small>gölge işlem dersi</small></div><div><b>${tl(O.canli,0)}</b><small>gerçek işlem (2× ağırlık)</small></div><div><b>${tl(O.acik,0)}</b><small>şu an takipte</small></div><div><b>${tl(O.test,0)}</b><small>geçmiş test ön bilgisi</small></div></div>
+   <p class="not" style="margin:12px 0 0">Bot gördüğü her AL sinyalini, girsin girmesin, gölgede takip eder: hedef mi önce geldi, stop mu? Her sonuç bir ders. Kazandıran koşullarda güveni ve lotu artırır, kaybettirenlerde azaltır, açıkça kaybettiren koşula hiç girmez.</p></div>`;
+  const kb=(ad,v,n,renk)=>{const w=v==null?0:Math.min(Math.abs(v)/1*50,50);return `<div><span>${ad}<br><small class="mu" style="font-weight:600">${n} işlem</small></span><span class="cb"><i style="${v>=0?`left:50%;width:${w}%`:`right:50%;width:${w}%`};background:${v==null?'transparent':v>=0?'var(--up)':'var(--dn)'}"></i></span><b class="n ${v==null?'mu':yon(v)}" style="text-align:right">${Rf(v)}</b></div>`};
+  x+=`<div class="kart pad" style="margin-top:12px"><b style="font:700 14.5px var(--disp)">Öğrenme işe yarıyor mu?</b><p class="not" style="margin:4px 0 12px">Gölge işlem açılırken botun o anki kararı yazılır, sonuç sonra gelir. Yani bu karşılaştırma geriye dönük ayarlanmış değil, dürüst.</p>
+    <div class="kars">${kb('Bütün sinyaller',O.hep,O.n-O.canli)}${kb('Botun gireceği',O.sec,O.sec_n)}${kb('Güçlü bulduğu',O.guclu,O.guclu_n)}</div>
+    ${O.sec_n>=O.n-O.canli?`<p class="not" style="margin-top:12px">Bot henüz hiçbir sinyali elemedi. Bir koşulda yeterince ders birikince ayırt etmeye başlayacak; fark o zaman burada görünür.</p>`:O.sec_n<30?`<p class="not" style="margin-top:12px">Anlamlı bir fark için en az 30 seçilmiş işlem gerekiyor; şimdilik ${O.sec_n}.</p>`:O.sec!=null&&O.hep!=null?`<p style="margin:12px 0 0;font-size:13px;font-weight:700" class="${O.sec>O.hep?'up':'dn'}">${O.sec>O.hep?`Seçtikleri, hepsine göre işlem başı ${tl(O.sec-O.hep,2)}R daha iyi.`:'Seçtikleri şimdilik hepsinden iyi değil; bot daha fazla veri topluyor.'}</p>`:''}</div>`;
+  const G=O.gelisim||[];if(G.length>=2){const mx=Math.max(...G.flatMap(g=>[Math.abs(g.hep||0),Math.abs(g.sec||0)]),.2);
+    x+=`<div class="kart pad" style="margin-top:12px;padding-bottom:26px"><div class="sat1"><b style="font:700 14.5px var(--disp)">Haftalık gelişim</b><span class="lbl"><span style="color:var(--mu2)">■</span> hepsi <span class="act">■</span> seçtikleri</span></div>
+     <div class="hafta">${G.map((g,i)=>`<div><i style="height:${Math.max(3,Math.abs(g.hep)/mx*80)}%;background:${g.hep>=0?'var(--mu2)':'var(--dns)'};animation-delay:${i*50}ms"></i><i style="height:${g.sec==null?0:Math.max(3,Math.abs(g.sec)/mx*80)}%;background:${(g.sec||0)>=0?'var(--ac)':'var(--dn)'};animation-delay:${i*50+25}ms"></i><span>${g.et}</span></div>`).join('')}</div></div>`}
+  const D_=[...(O.dersler||[]).filter(d=>d.iyi).slice(0,5),...(O.dersler||[]).filter(d=>!d.iyi).slice(0,5)];
+  x+=`<div class="kart pad" style="margin-top:12px"><b style="font:700 14.5px var(--disp)">Çıkardığı dersler</b>`+(D_.length?D_.map(d=>`<div class="ders"><span class="di ${d.iyi?'up':'dn'}">${d.iyi?'↑':'↓'}</span><div><b>${esc(d.metin.charAt(0).toLocaleUpperCase('tr-TR')+d.metin.slice(1))} ${d.engel?'<span class="rozet dn" style="padding:1px 7px;font-size:10px;vertical-align:1px">artık girmiyor</span>':d.iyi?'<span class="rozet up" style="padding:1px 7px;font-size:10px;vertical-align:1px">lotu büyütüyor</span>':'<span class="rozet wa" style="padding:1px 7px;font-size:10px;vertical-align:1px">temkinli</span>'}</b><small>${esc(d.boyut)} · ${d.adet} deneme · %${d.kaz} kazanma · ort. ${Rf(d.E)}</small></div></div>`).join('')
+     :`<p class="not" style="margin:8px 0 0">Henüz belirgin bir ders yok. Bir koşulda en az 8 deneme birikip sonuç ortalamadan belirgin ayrışınca burada görünür.</p>`)+`</div>`;
+  return x}
+const SEV_AD=['Çaylak','Öğrenci','Deneyimli','Usta','Uzman','Efsane'];
 function botAnaliz(){const kb=B.kayip||[],kg=(V.kayip||{})[B.ayar.dilim]||[];
   const tablo=(liste,genelAd)=>liste.slice(0,5).map(bl=>`<div class="kart" style="margin-bottom:10px"><div class="sat1" style="padding:12px 14px 4px"><b style="font:700 14.5px var(--disp)">${esc(bl.boyut)}</b><span class="lbl">${genelAd} %${bl.genel}</span></div>
     <table class="tbl kayip-tbl"><tr><th>Grup</th><th>Adet</th><th>Kazanma</th><th>Ort. R</th></tr>${bl.satirlar.map((r,i)=>`<tr><td>${esc(r.ad)}${i===0?' <span class="rozet dn" style="padding:1px 7px;font-size:10px">en zayıf</span>':i===bl.satirlar.length-1?' <span class="rozet up" style="padding:1px 7px;font-size:10px">en iyi</span>':''}</td><td>${r.n}</td>
       <td class="${r.kazanma>=bl.genel?'up':'dn'}">%${r.kazanma}</td><td class="${yon(r.ortR||0)}">${r.ortR>=0?'+':''}${tl(r.ortR,2)}</td></tr>`).join('')}</table></div>`).join('');
-  let x=`<p class="acik-not">Kaybeden işlemler hangi koşullarda yoğunlaşıyor? Gruplar arasında farkın en büyük olduğu boyutlar en üstte. "En zayıf" grubu kaçınmak, botu güçlendirmenin en hızlı yolu.</p>`;
+  const og=B.ogrenme;let x=beyinKart();
+  if(og){const yas=og.boyut.flatMap(b=>b.satir.filter(r=>r.yasak).map(r=>b.baslik+': '+r.ad));
+    x+=`<div class="bolum" style="margin-top:4px"><h3>Gerçek işlemlerin dökümü</h3><span class="lbl">4 botun ${og.n} işlemi</span></div>
+    <div class="kart pad" style="margin-bottom:12px"><p style="margin:0 0 10px;font-size:13.5px;font-weight:600;line-height:1.5">${og.n<5?'Henüz çok az işlem var. Bir koşulu kara listeye almak için en az 5 işlem görmesi gerekiyor.':yas.length?`Şu koşullarda artık işleme girmiyor: <b class="dn">${esc(yas.join(', '))}</b>. Bu gruplarda kazanma %30'un altında ve ortalama sonuç zararda.`:'Şimdilik kara listeye aldığı bir koşul yok. Bir grup en az 5 işlemde %30\'un altında kazanırsa o koşula girmeyi bırakacak.'}</p>
+    ${og.boyut.map(b=>b.satir.length?`<div style="margin-top:10px"><div class="lbl" style="margin-bottom:4px">${esc(b.baslik)}</div>${b.satir.map(r=>`<div class="sat1" style="font-size:13px;padding:5px 0;border-bottom:1px solid var(--ln2)"><span style="font-weight:700">${esc(r.ad)}${r.yasak?' <span class="rozet dn" style="padding:1px 7px;font-size:10px">girmiyor</span>':''}</span><span class="n"><span class="mu">${r.n} işlem · </span><b class="${r.kaz>=50?'up':r.kaz<30?'dn':''}">%${r.kaz}</b><span class="${yon(r.R)}"> · ${r.R>=0?'+':''}${tl(r.R,2)}R</span></span></div>`).join('')}</div>`:'').join('')}</div>`}
+  x+=`<p class="acik-not">Kaybeden işlemler hangi koşullarda yoğunlaşıyor? Gruplar arasında farkın en büyük olduğu boyutlar en üstte. "En zayıf" grubu kaçınmak, botu güçlendirmenin en hızlı yolu.</p>`;
   x+=`<div class="bolum" style="margin-top:6px"><h3>Botun kendi işlemleri</h3><span class="lbl">${(B.islem||[]).length} işlem</span></div>`+(kb.length?tablo(kb,'genel'):`<div class="bos">En az 8 kapanmış işlem gerekiyor. Şimdilik aşağıda geçmiş testteki sinyallere bakabilirsin.</div>`);
   x+=`<div class="bolum"><h3>Geçmiş test sinyalleri</h3><span class="lbl">${GOSTER[B.ayar.dilim]}</span></div>`+(kg.length?tablo(kg,'genel'):`<div class="bos">Derin test sonrası hazırlanır.</div>`);
   return x}
@@ -2489,11 +2537,11 @@ function botLog(){const R={zarar:['var(--dns)','var(--dn)','⛔'],al:['var(--acs
 function botGrafikKur(){if(botChart){botChart.remove();botChart=null}const el=$('#botGrafik');if(!el)return;
   const eg=(B.egri||[]).filter((x,i,a)=>!i||x[0]>a[i-1][0]);
   if(eg.length<2||!window.LightweightCharts){el.innerHTML=`<div style="height:100%;display:grid;place-items:center;color:var(--mu);font-size:12.5px;font-weight:700">Grafik bot işlem yaptıkça çizilecek</div>`;return}
-  const css=getComputedStyle(document.documentElement),cv=k=>css.getPropertyValue(k).trim(),up=(B.ozk>=B.ayar.butce),c=up?'#3ddc97':'#ff6b6b';
+  const css=getComputedStyle(document.documentElement),cv=k=>css.getPropertyValue(k).trim(),up=(B.ozk>=B.ayar.butce),iz=document.documentElement.dataset.tema==='iznik',c=iz?'#ffffff':up?'#3ddc97':'#ff6b6b';
   botChart=LightweightCharts.createChart(el,{width:el.clientWidth,height:170,layout:{background:{type:'solid',color:'transparent'},textColor:cv('--mu'),fontFamily:cv('--govde')||'sans-serif',fontSize:10},
     grid:{vertLines:{visible:false},horzLines:{color:cv('--ln2')}},rightPriceScale:{borderVisible:false,scaleMargins:{top:.15,bottom:.08}},timeScale:{borderVisible:false,timeVisible:true,secondsVisible:false},
     crosshair:{mode:0,vertLine:{color:cv('--mu2'),labelBackgroundColor:'#3b5bff'},horzLine:{color:cv('--mu2'),labelBackgroundColor:'#3b5bff'}},handleScroll:false,handleScale:false,localization:{locale:'tr-TR',priceFormatter:p=>tl(p,0)}});
-  const s=botChart.addAreaSeries({lineColor:c,topColor:up?'rgba(12,148,102,.3)':'rgba(217,60,69,.3)',bottomColor:'rgba(0,0,0,0)',lineWidth:2.5,priceLineVisible:false});
+  const s=botChart.addAreaSeries({lineColor:c,topColor:iz?'rgba(255,255,255,.22)':up?'rgba(12,148,102,.3)':'rgba(217,60,69,.3)',bottomColor:'rgba(0,0,0,0)',lineWidth:2.5,priceLineVisible:false});
   s.setData(eg.map(x=>({time:x[0]+10800,value:x[1]})));s.createPriceLine({price:B.ayar.butce,color:cv('--mu2'),lineStyle:2,lineWidth:1,axisLabelVisible:true,title:'bütçe'});
   botChart.timeScale().fitContent();new ResizeObserver(()=>botChart&&botChart.applyOptions({width:el.clientWidth})).observe(el)}
 function botAyarAc(){const a=Object.assign({},B.ayar);
@@ -3069,6 +3117,47 @@ def kurulum_karnesi(islemler: list[dict]) -> dict:
             for k, l in g.items()}
 
 
+TUM_BOTLAR: list = []          # ana bot + rakipler: öğrenme hepsinin işlemlerinden yapılır
+
+
+def _saat_grubu(h) -> str:
+    if h is None:
+        return "Saat kaydı yok"
+    return "10–11" if h < 11 else "11–13" if h < 13 else "13–15" if h < 15 else "15–18"
+
+
+OGRENME_BOYUT = {
+    "kurulum": ("Sinyal türü", lambda x: x.get("kurulum") or "?"),
+    "rejim": ("Hissenin trendi", lambda x: str(int(x.get("rejim") or 0))),
+    "saat": ("Giriş saati", lambda x: _saat_grubu(x.get("saat"))),
+    "kalite": ("Kalite", lambda x: x.get("kalite") or "?"),
+}
+
+
+def ortak_ogrenme() -> dict:
+    """Bütün botların kapanan işlemlerinden: hangi koşulda kaybediliyor? (boyut → grup → istatistik + yasak mı)"""
+    islemler, gor = [], set()
+    son = {}
+    for b in TUM_BOTLAR:                       # uygulama yeniden kurulduysa aynı adlı eski bot yerine en yenisi
+        son[b.ad] = b
+    for b in son.values():
+        for x in b.d.get("islem", [])[-400:]:
+            k = (x["id"], x.get("giris"))
+            if k not in gor:
+                gor.add(k)
+                islemler.append(x)
+    out = {}
+    for anahtar, (_, f) in OGRENME_BOYUT.items():
+        g = {}
+        for x in islemler:
+            g.setdefault(f(x), []).append(x)
+        out[anahtar] = {k: dict(n=len(l), kaz=sum(1 for x in l if x["kz"] > 0) / len(l), R=float(np.mean([x.get("R", 0) for x in l])),
+                                yasak=len(l) >= 5 and sum(1 for x in l if x["kz"] > 0) / len(l) < 0.3 and float(np.mean([x.get("R", 0) for x in l])) < -0.15)
+                        for k, l in g.items()}
+    out["_n"] = len(islemler)
+    return out
+
+
 def _ep_dizi(df) -> np.ndarray:
     """Mum zamanlarını saniye cinsinden epoch olarak döndürür."""
     return pd.DatetimeIndex(df.index).as_unit("ns").asi8 // 10 ** 9
@@ -3188,6 +3277,7 @@ class CanliBot:
         self.ad, self.sabit, self.bildir = ad, sabit, bildir
         self._push_log, self._push_egri = -1, -1
         self.d = self._yukle()
+        TUM_BOTLAR.append(self)
 
     # --- kayıt ---
     def _yeni(self, ayar: dict) -> dict:
@@ -3304,7 +3394,7 @@ class CanliBot:
         return dt.datetime.fromtimestamp(t, TZ).strftime("%Y-%m-%d")
 
     # --- işlem mekaniği ---
-    def _al(self, h, mod, s, j, an, t) -> bool:
+    def _al(self, h, mod, s, j, an, t, karar: dict | None = None) -> bool:
         d, a = self.d, self.d["ayar"]
         fiyat = float(an["fiyat"])
         giris = fiyat * (1 + KAYMA)
@@ -3316,6 +3406,8 @@ class CanliBot:
         carpan = 1.0
         if a.get("guven_lot"):                                        # güvene göre pozisyon: 50→0,6x, 75→1x, 95→1,4x
             carpan = float(np.clip(0.6 + (s["guven"] - 50) / 25 * 0.4, 0.5, 1.5)) * (1.15 if j["kalite"] == "A+" else 1.0)
+        if karar and a.get("ogrenen", True):
+            carpan *= karar.get("carpan", 1.0)                           # öğrenilmiş: iyi çalışan koşulda büyük, zayıfta küçük lot
         lot = int(oz * a["risk"] * carpan / 100 / rb)                 # risk bazlı lot
         lot = min(lot, int(min(d["nakit"], oz / a["acik"]) / giris))  # tek hisseye en fazla özkaynak / pozisyon sayısı
         if lot < 1:
@@ -3330,7 +3422,8 @@ class CanliBot:
             atr=round(nanv(an["ctx"]["A"]["ATR"][an["ctx"]["n"] - 1], fiyat * 0.01), 4), tepe=fiyat, carpan=round(carpan, 2),
             saat=dt.datetime.fromtimestamp(t, TZ).hour, sektor=sektor_bul(h), rejim=int(s.get("rejim", 0)), mtf=int(s.get("mtf", 0))))
         self._log("al", f"{lot} lot alındı @ {sayi(giris)} · {j['kalite']} · güven {s['guven']} — {s['sebepler'][0]}"
-                         + (" (limit emir doldu)" if "_ts" in s else "") + f". Plan: stop {sayi(stop)}, H1 ({sayi(float(s['hedef']))}) gelince yarısını sat", h)
+                         + (" (limit emir doldu)" if "_ts" in s else "")
+                         + (f". Öğrenme: {karar['neden']}, lot ×{sayi(karar['carpan'], 2)}" if karar and karar.get("neden") else "") + f". Plan: stop {sayi(stop)}, H1 ({sayi(float(s['hedef']))}) gelince yarısını sat", h)
         self._haber_ver(f"{self.ad}: {h} alındı", f"{lot} lot @ {sayi(giris)} · stop {sayi(stop)} · H1 {sayi(float(s['hedef']))}\n{s['sebepler'][0]}", "green_circle")
         return True
 
@@ -3363,6 +3456,11 @@ class CanliBot:
                                R=round(R, 2), sebep=sebep, guven=p["guven"], kalite=p["kalite"], kurulum=p["kurulum"],
                                saat=p.get("saat"), sektor=p.get("sektor", sektor_bul(p["s"])), rejim=p.get("rejim", 0), mtf=p.get("mtf", 0)))
         d["islem"] = d["islem"][-1500:]
+        if OGRENCI is not None:
+            try:
+                OGRENCI.canli_ekle(d["islem"][-1])
+            except Exception:  # noqa: BLE001
+                pass
         self._log("kazanc" if kz > 0 else "zarar",
                   f"Pozisyon kapandı ({sebep}) · {'+' if kz >= 0 else '−'}{sayi(abs(kz), 0)} TL · {'+' if R >= 0 else ''}{sayi(R, 1)}R", p["s"])
         self._haber_ver(f"{self.ad}: {p['s']} kapandı ({sebep})", f"{'+' if kz >= 0 else '−'}{sayi(abs(kz), 0)} TL · {'+' if R >= 0 else ''}{sayi(R, 1)}R",
@@ -3495,7 +3593,8 @@ class CanliBot:
                 p["fiyat"] = fiyat
                 if acik:
                     if fiyat <= p["stop"]:
-                        self._sat(p, p["kalan"], fiyat, t, self._stop_sebep(p))
+                        o_son = float(ctx["df"]["Open"].iloc[-1])           # son (açık) mumun açılışı: boşluk varsa oradan dolar
+                        self._sat(p, p["kalan"], min(p["stop"], o_son) if o_son > fiyat else fiyat, t, self._stop_sebep(p))
                     else:
                         self._hedefler(p, fiyat, t)
                         if p in d["poz"]:
@@ -3597,9 +3696,15 @@ class CanliBot:
                             if n - 1 - s["i"] > {"1": 6, "5": 2}.get(mod, 1):
                                 continue                              # eski sinyal (1 dk: son 7, 5 dk: son 3, diğer: son 2 mum)
                             tani["sinyal"] += 1
-                            if s["guven"] < a["guven"]:
-                                ekle("guven"); continue
                             j = sinyal_json(s, df, n, an["fiyat"], mod)
+                            # Öğrenen beyin: önce bu sinyali gölgede takibe al (girsek de girmesek de ders olur), sonra
+                            # geçmiş derslere göre güveni/lotu ayarla ya da engelle
+                            karar = dict(delta=0, carpan=1.0, engel=None, neden=None)
+                            if OGRENCI is not None:
+                                karar = OGRENCI.degerlendir(mod, s, j["kalite"], sektor_bul(h))
+                                OGRENCI.golge_ekle(h, mod, s, j, float(an["fiyat"]), int(_ep_dizi(df)[s["i"]]), karar)
+                            if s["guven"] + max(karar["delta"], -20) < a["guven"]:
+                                ekle("guven"); continue
                             if KALITE_SIRA[j["kalite"]] > KALITE_SIRA[a["kalite"]]:
                                 ekle("kalite"); continue
                             if a.get("coklu_onay") and (s.get("mtf", 0) <= 0 or s.get("htf_yon", 0) < 0):
@@ -3615,6 +3720,11 @@ class CanliBot:
                             if adim / f > 0.004 or adim > 0.35 * atr_i or (f - s["stop"]) < 3 * adim:
                                 ekle("adim"); continue                # kuruşluk hisse: bir kademe bile stopu yer, gürültü çok
                             kk = karne.get(s.get("kurulum") or "?")
+                            if karar["engel"]:
+                                if anahtar not in gorulen:
+                                    d["gorulen"].append(anahtar)
+                                    self._log("bilgi", f"Ders aldım, girmiyorum: {karar['engel']}", h)
+                                ekle("ogrenme"); continue
                             if (kk and kk["n"] >= 4 and kk["kaz"] < 0.3 and kk["R"] < 0) or son_zarar.get(h, 0) >= 2:
                                 ekle("ogrenme"); continue             # botun kendi geçmişinde kaybettiren kurulum / hisse
                             # Gecikmeli veri yüzünden fiyat biraz kaçmış olabilir: 0,35 ATR'ye kadar tolerans, ama H1'e kalan
@@ -3624,14 +3734,14 @@ class CanliBot:
                                 # Fiyat kaçtı: kovalamak yerine aralığa geri çekilmeyi bekleyen limit emir bırak
                                 if h not in eldeki:
                                     bekleyen = [x for x in bekleyen if x["s"] != h]     # hisse başına tek (en yeni) emir
-                                    bekleyen.append(self._al_hazirla(s, h, mod, an, j))
+                                    bekleyen.append(dict(self._al_hazirla(s, h, mod, an, j), _ek=karar["carpan"], _not=karar["neden"]))
                                     bek_anahtar.add(anahtar)
                                     d["gorulen"].append(anahtar)
                                     self._log("bilgi", f"Fiyat kaçtı ({sayi(f)}), kovalamıyorum. {sayi(s['giris_alt'])}–{sayi(s['giris_ust'])} aralığına limit AL emri bıraktım", h)
                                 ekle("bekleyen"); continue
                             if f <= s["stop"] or f < s["giris_alt"] - 0.1 * atr_i or kalan_kz < 1.0:
                                 ekle("aralik"); continue
-                            adaylar.append((KALITE_SIRA[j["kalite"]], -s["guven"], h, s, j, anahtar, an, mod))
+                            adaylar.append((KALITE_SIRA[j["kalite"]], -(s["guven"] + karar["delta"]), h, s, j, anahtar, an, mod, karar))
                 # Bekleyen limit emirler: fiyat aralığa geri geldiyse gir; stop kırıldıysa iptal
                 kalanlar = []
                 for b in bekleyen:
@@ -3644,12 +3754,13 @@ class CanliBot:
                         continue
                     if b["alt"] - 0.05 * (b["ust"] - b["stop"]) <= f <= b["ust"] and (b["hedef"] - f) / max(f - b["stop"], 1e-9) >= 1.2:
                         j = dict(kalite=b["kalite"], t=0)
-                        adaylar.append((KALITE_SIRA[b["kalite"]] - 0.5, -b["guven"], b["s"], b, j, b["anahtar"], an, b["mod"]))
+                        adaylar.append((KALITE_SIRA[b["kalite"]] - 0.5, -b["guven"], b["s"], b, j, b["anahtar"], an, b["mod"],
+                                        dict(delta=0, carpan=b.get("_ek", 1.0), engel=None, neden=b.get("_not"))))
                         continue
                     kalanlar.append(b)
                 bekleyen = kalanlar
                 adaylar.sort(key=lambda x: (x[0], x[1]))
-                for _, _, h, s, j, anahtar, an, mod in adaylar:
+                for _, _, h, s, j, anahtar, an, mod, karar in adaylar:
                     if gun["al"] >= a["gunluk"] or len(d["poz"]) >= a["acik"]:
                         ekle("limit")
                         if "_ts" in s:
@@ -3657,7 +3768,7 @@ class CanliBot:
                         continue
                     if h in eldeki:
                         ekle("elde"); continue
-                    if self._al(h, mod, s, j, an, t):
+                    if self._al(h, mod, s, j, an, t, karar):
                         gun["al"] += 1
                         tani["giris"] += 1
                         eldeki.add(h)
@@ -3801,6 +3912,18 @@ class CanliBot:
                         pf=st_["pf"], dd=st_["dd"], skor=st_["skor"], poz=len(d["poz"]), dilim=a["dilim"],
                         egri=[[x[0], round(x[1] / a["butce"] * 100 - 100, 2)] for x in eg[::adim]])
 
+    def _ogrenme_ui(self) -> dict:
+        og = ortak_ogrenme()
+        ad = {"rejim": {"1": "Yükselen trend", "-1": "Düşen trend", "0": "Yatay"}}
+        kur = lambda k: KURULUM_ADI.get(k, (k[2:] + " kırılımı") if str(k).startswith("f-") else k)  # noqa: E731
+        boyutlar = []
+        for b, (baslik, _) in OGRENME_BOYUT.items():
+            sat = [dict(ad=(kur(k) if b == "kurulum" else ad.get(b, {}).get(k, k)), n=v["n"], kaz=round(v["kaz"] * 100), R=_r(v["R"], 2), yasak=v["yasak"])
+                   for k, v in og[b].items()]
+            sat.sort(key=lambda x: (x["kaz"], x["R"]))
+            boyutlar.append(dict(baslik=baslik, satir=sat))
+        return dict(n=og["_n"], boyut=boyutlar)
+
     def ui(self, bist_p: float | None) -> dict:
         with self.kilit:
             d, a = self.d, self.d["ayar"]
@@ -3846,6 +3969,7 @@ class CanliBot:
                         log=[[saat(x[0]), x[1], x[2], x[3]] for x in reversed(d["log"][-80:])],
                         st=self._istatistik(), bugun=dict(islem=bugun.get("al", 0), kz=_r(bugun.get("kz", 0), 0), acik_kz=_r(acik_kz, 0),
                                                          kapanan=len(bugun_islem), kazanan=sum(1 for x in bugun_islem if x["kz"] > 0)),
+                        ogrenme=self._ogrenme_ui(),
                         maruziyet=_r(sum(x["deger"] for x in poz) / oz * 100 if oz else 0, 1), bekleyen=bekleyen, durum=d.get("durum") or {}, tani=d.get("tani"),
                         son_tik=saat(d["son_tik"]) if d.get("son_tik") else None, ad=self.ad,
                         kayip=kayip_analizi([dict(kazandi=x["kz"] > 0, R=x["R"], saat=x.get("saat"), kurulum=x.get("kurulum"),
@@ -3854,6 +3978,322 @@ class CanliBot:
                         kayit=(dict(tip="github", hazir=self.depo.hazir, hata=self.depo.hata, repo=self.depo.repo, dal=self.depo.dal,
                                     son=saat(int(self.depo.son)) if self.depo.son else None)
                                if self.depo else dict(tip="yerel")))
+
+# ---------- Öğrenen beyin: her sinyali gölgede takip eder, gerçek işlemlerle birleştirir, zamanla güçlenir ----------
+OGREN_DOSYA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ogrenme.json")
+OGREN_ALAN = ["mod", "kurulum", "rejim", "mtf", "saat", "kalite", "guv", "sektor"]       # kayıt sırası
+OGREN_BOYUT = {                                                                      # öğrenilen boyutlar (ve ikili kombinasyonlar)
+    "kurulum": "Sinyal türü", "rejim": "Hissenin trendi", "mtf": "Üst zaman dilimi", "saat": "Giriş saati",
+    "kalite": "Kalite", "guv": "Güven aralığı", "mod": "Zaman dilimi", "sektor": "Sektör",
+    "kurulum|rejim": "Sinyal türü × trend", "kurulum|mod": "Sinyal türü × zaman dilimi", "saat|mod": "Saat × zaman dilimi",
+}
+SEVIYELER = [(0, "Çaylak"), (60, "Öğrenci"), (250, "Deneyimli"), (700, "Usta"), (1600, "Uzman"), (4000, "Efsane")]
+_SAAT = lambda h: "?" if h is None else ("10–11" if h < 11 else "11–13" if h < 13 else "13–15" if h < 15 else "15–18")  # noqa: E731
+_GUV = lambda g: "50–59" if g < 60 else "60–69" if g < 70 else "70–79" if g < 80 else "80+"  # noqa: E731
+
+
+def ozellik(mod, kurulum, rejim, mtf, saat, kalite, guven, sektor) -> dict:
+    return dict(mod=str(mod), kurulum=str(kurulum or "?"), rejim=str(int(rejim or 0)), mtf=str(int(mtf or 0)),
+                saat=saat if isinstance(saat, str) else _SAAT(saat), kalite=str(kalite or "?"), guv=_GUV(int(guven or 0)),
+                sektor=str(sektor or "Diğer"))
+
+
+def _grup_anahtar(f: dict) -> list[tuple[str, str]]:
+    return [(b, "|".join(f[p] for p in b.split("|"))) for b in OGREN_BOYUT]
+
+
+class Ogrenci:
+    """Botun hafızası.
+    - Gölge işlemler: botun gördüğü HER taze AL sinyali (girsin girmesin) sanal olarak takip edilir; hedef mi stop mu
+      önce geldi kaydedilir. Böylece günde 3–5 gerçek işlem yerine onlarca ders birikir.
+    - Gerçek işlemler 2 kat ağırlıkla, geçmiş test sonuçları zayıf ön bilgi (0,25 ağırlık) olarak eklenir.
+    - Her koşul (sinyal türü, trend, saat, kalite… ve ikili kombinasyonları) için beklenen getiri, az veriyle aşırı
+      tepki vermesin diye genel ortalamaya doğru büzülerek (Bayes) hesaplanır.
+    - Karar: güven puanını yukarı/aşağı çeker, lotu büyütür/küçültür, açıkça kaybettiren koşulu engeller.
+    - Dürüst ölçüm: her gölge işlem açılırken botun o anki kararı (girerdi/girmezdi) yazılır; sonradan 'öğrenmenin
+      seçtikleri' ile 'hepsi' karşılaştırılır (geriye dönük hile yok)."""
+
+    A = 12.0            # büzülme gücü: bir grubun kendi verisi bu kadar ağırlığa ulaşınca yarı yarıya kendi sonucuna güvenilir
+
+    def __init__(self, depo: GitDepo | None = None):
+        self.kilit = threading.RLock()
+        self.depo = depo
+        self.d = self._yukle()
+        self._ist = None
+        self._son_kayit = 0.0
+
+    # --- kayıt ---
+    def _bos(self) -> dict:
+        return dict(surum=1, baslangic=int(time.time()), golge=[], kayit=[], test={}, gorulen=[], egri=[])
+
+    def _yukle(self) -> dict:
+        d = None
+        try:
+            with open(OGREN_DOSYA, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:  # noqa: BLE001
+            pass
+        if self.depo:
+            try:
+                u = self.depo.oku()
+                if isinstance(u, dict) and u.get("surum") == 1 and len(u.get("kayit", [])) >= len((d or {}).get("kayit", [])):
+                    d = u
+            except Exception as e:  # noqa: BLE001
+                self.depo.hata = str(e)
+        if not (isinstance(d, dict) and d.get("surum") == 1):
+            d = self._bos()
+        return {**self._bos(), **d}
+
+    def kaydet(self, zorla: bool = False):
+        if not zorla and time.time() - self._son_kayit < 600:
+            return
+        self._son_kayit = time.time()
+        with self.kilit:
+            veri = json.loads(json.dumps(self.d))
+        try:
+            with open(OGREN_DOSYA + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(veri, f, ensure_ascii=False, separators=(",", ":"))
+            os.replace(OGREN_DOSYA + ".tmp", OGREN_DOSYA)
+        except Exception:  # noqa: BLE001
+            pass
+        if self.depo and self.depo.hazir:
+            threading.Thread(target=lambda: self.depo.yaz(veri), daemon=True).start()
+
+    # --- veri ekleme ---
+    def golge_ekle(self, h: str, mod: str, s: dict, j: dict, fiyat: float, ep_sinyal: int, karar: dict):
+        """Taze AL sinyalini gölge işlem olarak açar (aynı sinyal bir kez)."""
+        anahtar = f"{h}-{mod}-{ep_sinyal}"
+        with self.kilit:
+            if anahtar in self._gorulen_set():
+                return
+            stop, hedef = float(s["stop"]), float(s["hedef"])
+            if not (stop < fiyat < hedef):
+                return
+            f = ozellik(mod, s.get("kurulum"), s.get("rejim", 0), s.get("mtf", 0), dt.datetime.now(TZ).hour, j["kalite"], s["guven"], sektor_bul(h))
+            self.d["golge"].append(dict(s=h, mod=mod, g=round(fiyat, 4), st=round(stop, 4), hd=round(hedef, 4), ts=ep_sinyal,
+                                        son=ep_sinyal, bar=0, t=int(time.time()), f=[f[k] for k in OGREN_ALAN],
+                                        karar=0 if karar.get("engel") else (2 if karar.get("delta", 0) >= 3 else 1)))
+            self.d["golge"] = self.d["golge"][-400:]
+            self.d["gorulen"] = (self.d["gorulen"] + [anahtar])[-3000:]
+            self._gs = None
+
+    def _gorulen_set(self):
+        if getattr(self, "_gs", None) is None:
+            self._gs = set(self.d["gorulen"])
+        return self._gs
+
+    def _kapat(self, g: dict, R: float, t: int, kaynak: str = "g"):
+        R = float(max(min(R, 6.0), -1.5))
+        self.d["kayit"].append([t, round(R, 3), kaynak, g.get("karar", 1)] + list(g["f"]))
+        self.d["kayit"] = self.d["kayit"][-3500:]
+        self._ist = None
+
+    def canli_ekle(self, x: dict):
+        """Botun gerçek (sanal bütçeli) işlemi kapandığında: 2 kat ağırlıklı ders."""
+        f = ozellik(x.get("mod", "g"), x.get("kurulum"), x.get("rejim", 0), x.get("mtf", 0), x.get("saat"), x.get("kalite"),
+                    x.get("guven", 60), x.get("sektor"))
+        with self.kilit:
+            self._kapat(dict(f=[f[k] for k in OGREN_ALAN], karar=1), x.get("R", 0), int(x.get("cikis_ts") or time.time()), "c")
+
+    def test_yukle(self, mod: str, tum: list[dict]):
+        """Derin geçmiş testin sonuçlarını ön bilgi olarak özetler (ham veri saklanmaz)."""
+        ozet = {}
+        for s in tum:
+            if s.get("yon", 1) <= 0 or s.get("sonuc") not in ("hedef", "stop"):
+                continue
+            risk = abs(s["fiyat"] - s["stop"]) / s["fiyat"] if s.get("fiyat") else 0
+            R = max(min(s["getiri"] / risk if risk else 0, 6), -1.5)
+            kal = ("A+" if s["guven"] >= 80 and s.get("guclu") and s.get("rk", 0) >= 2 else
+                   "A" if s["guven"] >= 70 and s.get("rk", 0) >= 1.5 else "B" if s["guven"] >= 60 else "C")
+            saat = pd.Timestamp(s["zaman"]).hour if s.get("zaman") is not None and mod != "w" else None
+            f = ozellik(mod, s.get("kurulum"), s.get("rejim", 0), s.get("mtf", 0), saat, kal, s["guven"], sektor_bul(s.get("sym", "")))
+            for b, k in _grup_anahtar(f) + [("_", "_")]:
+                o = ozet.setdefault(f"{b}={k}", [0, 0, 0.0])
+                o[0] += 1
+                o[1] += R > 0
+                o[2] = round(o[2] + R, 3)
+        with self.kilit:
+            self.d["test"][mod] = ozet
+            self._ist = None
+
+    # --- her taramada: gölge işlemleri ilerlet ---
+    def guncelle(self, analiz: dict):
+        simdi = int(time.time())
+        with self.kilit:
+            kalan = []
+            for g in self.d["golge"]:
+                an = analiz.get(g["mod"], {}).get(g["s"])
+                if not an:
+                    if simdi - g["t"] > 4 * 86400:
+                        continue                                  # uzun süre veri yoksa bırak
+                    kalan.append(g)
+                    continue
+                ctx = an["ctx"]
+                A, n, ep = ctx["A"], ctx["n"], _ep_dizi(ctx["df"])
+                r0 = g["g"] - g["st"]
+                bitti = False
+                for i in range(min(n, len(ep))):
+                    ti = int(ep[i])
+                    if ti <= g["son"]:
+                        continue
+                    g["son"], g["bar"] = ti, g["bar"] + 1
+                    lo, hi = float(A["Low"][i]), float(A["High"][i])
+                    if lo <= g["st"]:                              # temkinli: aynı mumda ikisi de olduysa stop sayılır
+                        self._kapat(g, -1.0, ti); bitti = True; break
+                    if hi >= g["hd"]:
+                        self._kapat(g, (g["hd"] - g["g"]) / r0, ti); bitti = True; break
+                    if g["bar"] >= TEST_UFKU:
+                        self._kapat(g, (float(A["Close"][i]) - g["g"]) / r0, ti); bitti = True; break
+                if not bitti:
+                    kalan.append(g)
+            self.d["golge"] = kalan
+            # Günlük gelişim kaydı
+            bugun = dt.datetime.now(TZ).strftime("%Y-%m-%d")
+            if not self.d["egri"] or self.d["egri"][-1][0] != bugun:
+                ist = self._istatistik()
+                self.d["egri"].append([bugun, ist["n"], round(ist["E0"], 3)])
+                self.d["egri"] = self.d["egri"][-180:]
+        self.kaydet()
+
+    # --- istatistik ---
+    def _istatistik(self) -> dict:
+        if self._ist is not None:
+            return self._ist
+        W = {"g": 1.0, "c": 2.0}
+        gr = {}
+        topn = topw = topR = 0.0
+        for r in self.d["kayit"]:
+            w = W.get(r[2], 1.0)
+            R = r[1]
+            f = dict(zip(OGREN_ALAN, r[4:]))
+            topn += w; topw += w * (R > 0); topR += w * R
+            for b, k in _grup_anahtar(f):
+                o = gr.setdefault((b, k), [0.0, 0.0, 0.0, 0])
+                o[0] += w; o[1] += w * (R > 0); o[2] += w * R; o[3] += 1
+        tw = 0.25                                                  # geçmiş test ön bilgisi zayıf ağırlıkla
+        for oz in self.d["test"].values():
+            for key, v in oz.items():
+                b, k = key.split("=", 1)
+                if b == "_":
+                    topn += tw * v[0]; topw += tw * v[1]; topR += tw * v[2]
+                    continue
+                o = gr.setdefault((b, k), [0.0, 0.0, 0.0, 0])
+                o[0] += tw * v[0]; o[1] += tw * v[1]; o[2] += tw * v[2]
+        E0 = topR / topn if topn else 0.0
+        P0 = topw / topn if topn else 0.5
+        A = self.A
+        grup = {}
+        for (b, k), (n, w, R, adet) in gr.items():
+            grup[(b, k)] = dict(n=n, adet=adet, E=(R + A * E0) / (n + A), P=(w + A * P0) / (n + A), ham=R / n if n else 0.0)
+        self._ist = dict(n=len(self.d["kayit"]), E0=E0, P0=P0, grup=grup)
+        return self._ist
+
+    def degerlendir(self, mod, s: dict, kalite: str, sektor: str, saat=None) -> dict:
+        """Sinyal için öğrenilmiş düzeltme: güven farkı, lot çarpanı, engel (varsa nedeni)."""
+        with self.kilit:
+            ist = self._istatistik()
+        if ist["n"] < 20:
+            return dict(delta=0, carpan=1.0, engel=None, neden=None)
+        f = ozellik(mod, s.get("kurulum"), s.get("rejim", 0), s.get("mtf", 0), dt.datetime.now(TZ).hour if saat is None else saat,
+                    kalite, s.get("guven", 60), sektor)
+        toplam = agirlik = 0.0
+        en_kotu = en_iyi = None
+        for b, k in _grup_anahtar(f):
+            g = ist["grup"].get((b, k))
+            if not g or g["adet"] < 6:
+                continue
+            fark = g["E"] - ist["E0"]
+            a = 1.6 if "|" in b else 1.0
+            toplam += a * fark; agirlik += a
+            if en_kotu is None or fark < en_kotu[0]:
+                en_kotu = (fark, b, k, g)
+            if en_iyi is None or fark > en_iyi[0]:
+                en_iyi = (fark, b, k, g)
+            if g["adet"] >= 8 and g["E"] <= -0.3 and g["P"] < 0.33:
+                return dict(delta=-99, carpan=0.0, engel=f"{self.grup_adi(b, k)}: {g['adet']} denemede %{round(g['P'] * 100)} kazanma, ort. {sayi(g['E'], 2)}R", neden=None)
+        if not agirlik:
+            return dict(delta=0, carpan=1.0, engel=None, neden=None)
+        skor = toplam / agirlik
+        delta = int(round(float(np.clip(skor * 40, -15, 10))))
+        carpan = float(np.clip(1 + skor * 1.2, 0.6, 1.4))
+        neden = None
+        if delta >= 3 and en_iyi:
+            neden = f"{self.grup_adi(en_iyi[1], en_iyi[2])} iyi çalışıyor (ort. {sayi(en_iyi[3]['E'], 2)}R)"
+        elif delta <= -3 and en_kotu:
+            neden = f"{self.grup_adi(en_kotu[1], en_kotu[2])} zayıf (ort. {sayi(en_kotu[3]['E'], 2)}R)"
+        return dict(delta=delta, carpan=round(carpan, 2), engel=None, neden=neden)
+
+    @staticmethod
+    def grup_adi(b: str, k: str) -> str:
+        def tek(bb, kk):
+            if bb == "kurulum":
+                return KURULUM_ADI.get(kk, (kk[2:] + " kırılımı") if kk.startswith("f-") else kk)
+            if bb == "rejim":
+                return {"1": "yükselen trendde", "-1": "düşen trendde", "0": "yatay piyasada"}.get(kk, kk)
+            if bb == "mtf":
+                return {"1": "üst dilim onaylı", "-1": "üst dilim ters", "0": "üst dilim kararsız"}.get(kk, kk)
+            if bb == "mod":
+                return DILIM_ADI.get(kk, kk)
+            if bb == "saat":
+                return f"saat {kk}"
+            if bb == "kalite":
+                return f"{kk} kalite"
+            if bb == "guv":
+                return f"güven {kk}"
+            return kk
+        bs, ks = b.split("|"), k.split("|")
+        return " · ".join(tek(x, y) for x, y in zip(bs, ks))
+
+    def seviye(self) -> dict:
+        n = len(self.d["kayit"])
+        i = max(k for k, (esik, _) in enumerate(SEVIYELER) if n >= esik)
+        sonraki = SEVIYELER[i + 1][0] if i + 1 < len(SEVIYELER) else None
+        return dict(ad=SEVIYELER[i][1], no=i + 1, n=n, sonraki=sonraki,
+                    oran=1.0 if not sonraki else (n - SEVIYELER[i][0]) / (sonraki - SEVIYELER[i][0]))
+
+    def ui(self) -> dict:
+        with self.kilit:
+            ist = self._istatistik()
+            kayit = list(self.d["kayit"])
+            acik = len(self.d["golge"])
+            egri = list(self.d["egri"])
+        # Dürüst karşılaştırma: gölge işlemler açılırken verilen karara göre (sonradan bakma yok)
+        hafta = {}
+        for r in kayit:
+            if r[2] != "g":
+                continue
+            k = dt.datetime.fromtimestamp(r[0], TZ).strftime("%d.%m")
+            hf = hafta.setdefault(dt.datetime.fromtimestamp(r[0], TZ).isocalendar()[1], dict(et=k, hep=[], sec=[]))
+            hf["hep"].append(r[1])
+            if r[3] >= 1:
+                hf["sec"].append(r[1])
+        gelisim = [dict(et=v["et"], hep=_r(float(np.mean(v["hep"])), 3), sec=_r(float(np.mean(v["sec"])), 3) if v["sec"] else None,
+                        n=len(v["hep"])) for _, v in sorted(hafta.items())][-12:]
+        tum_g = [r for r in kayit if r[2] == "g"]
+        secilen = [r[1] for r in tum_g if r[3] >= 1]
+        guclu = [r[1] for r in tum_g if r[3] == 2]
+        # Dersler: verisi yeterli ve ortalamadan belirgin ayrışan gruplar
+        dersler = []
+        for (b, k), g in ist["grup"].items():
+            if g["adet"] < 8 or b == "sektor" and g["adet"] < 15:
+                continue
+            fark = g["E"] - ist["E0"]
+            if abs(fark) < 0.12:
+                continue
+            dersler.append(dict(metin=self.grup_adi(b, k), boyut=OGREN_BOYUT[b], adet=g["adet"], kaz=round(g["P"] * 100), E=_r(g["E"], 2),
+                                iyi=fark > 0, engel=g["adet"] >= 8 and g["E"] <= -0.3 and g["P"] < 0.33, fark=_r(fark, 2)))
+        dersler.sort(key=lambda x: -abs(x["fark"]))
+        return dict(seviye=self.seviye(), acik=acik, n=len(kayit), canli=sum(1 for r in kayit if r[2] == "c"),
+                    test=sum((oz.get("_=_") or [0])[0] for oz in self.d["test"].values()),
+                    E0=_r(ist["E0"], 3), P0=round(ist["P0"] * 100),
+                    hep=_r(float(np.mean([r[1] for r in tum_g])), 3) if tum_g else None,
+                    sec=_r(float(np.mean(secilen)), 3) if secilen else None, sec_n=len(secilen),
+                    guclu=_r(float(np.mean(guclu)), 3) if guclu else None, guclu_n=len(guclu),
+                    gelisim=gelisim, dersler=dersler[:14], egri=egri[-60:],
+                    kayit=(dict(hazir=self.depo.hazir, hata=self.depo.hata) if self.depo else None))
+
+
+OGRENCI: Ogrenci | None = None
 
 # ---------- Haberler: Google Haberler'den hisse haberleri, Türkçe olumlu/olumsuz puanlama ----------
 HABER_OLUMLU = {
@@ -4239,6 +4679,8 @@ class Servis:
         self.karne = {m: [] for m in MODLAR}
         self.bot = {m: dict(n=0) for m in MODLAR}
         self.ortak = Ortak(depo_kur("ortak.json"))
+        global OGRENCI
+        self.ogrenci = OGRENCI = Ogrenci(depo_kur("ogrenme.json"))
         self.canli = CanliBot(depo_kur(), bildir=lambda b_, m_, e_: self.ortak.gonder(b_, m_, e_, tur="bot"))
         klasor = os.path.dirname(os.path.abspath(__file__))
         self.rakipler = {k: CanliBot(depo_kur(f"bot_{k}.json"), os.path.join(klasor, f"bot_{k}.json"), v["ad"], v["ayar"])
@@ -4252,6 +4694,7 @@ class Servis:
         b["yaris"] = [dict(self.canli.kisa_ozet(), anahtar="ana", aciklama="Senin ayarların")] + [
             dict(r.kisa_ozet(), anahtar=k, aciklama=RAKIPLER[k]["aciklama"]) for k, r in self.rakipler.items()]
         b["ortak"] = self.ortak.ui()
+        b["ogren"] = self.ogrenci.ui()
         bot = json.dumps(b, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
         return (ARAYUZ.replace("__BOT__", bot).replace("__MESAJ__", json.dumps(mesaj, ensure_ascii=False))
                 .replace("__VERI__", self.veri))
@@ -4316,6 +4759,10 @@ class Servis:
             self.karne[mod], AGIRLIK[mod] = karne_hesapla(tum)
             self.bot[mod] = bot_portfoyu(tum)
             hatalardan_ogren(tum, mod)
+            try:
+                self.ogrenci.test_yukle(mod, tum)
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 self.kayip[mod] = kayip_analizi(sinyal_kayitlari(tum, None))
             except Exception:  # noqa: BLE001
@@ -4421,6 +4868,11 @@ class Servis:
         self.haber.hedef_ayarla(oncelik)
         haber_ozet = haber_uygula(analiz, self.haber)
 
+        # Öğrenen beyin: gölge işlemleri yeni mumlarla ilerlet (hedef mi stop mu önce geldi)
+        try:
+            self.ogrenci.guncelle(analiz)
+        except Exception as e:  # noqa: BLE001
+            self.hata = f"Öğrenme: {type(e).__name__}: {e}"
         # Canlı bot: yeni sinyallere gir, açık pozisyonları yönet
         self.durum = "Canlı bot pozisyonları güncelliyor"
         try:
@@ -4519,7 +4971,7 @@ div[data-testid="stVerticalBlock"] {gap:0 !important}
 </style>""", unsafe_allow_html=True)
 
 servis = servis_al_v6()
-if not hasattr(servis, "canli") or not hasattr(servis.canli, "depo") or not hasattr(servis, "haber") or not hasattr(servis, "rakipler"):   # önbellekte eski sürüm kalmışsa yeniden kur
+if not hasattr(servis, "canli") or not hasattr(servis.canli, "depo") or not hasattr(servis, "haber") or not hasattr(servis, "rakipler") or not hasattr(servis, "ogrenci"):   # önbellekte eski sürüm kalmışsa yeniden kur
     st.cache_resource.clear()
     servis = servis_al_v6()
 
