@@ -18,6 +18,7 @@ Yatırım tavsiyesi değildir.
 import bisect
 import datetime as dt
 import base64
+import gc
 import json
 import os
 import threading
@@ -2242,7 +2243,7 @@ function ekranBot(){const a=B.ayar,kz=B.kz||0;
    <div id="botGrafik"></div>
    ${botDurum()}
    <div class="botalt"><div><small>Bugün</small><b>${B.bugun.islem}<span class="mu" style="font-size:12px">/${a.gunluk}</span></b><small>işlem</small></div><div><small>Açık</small><b>${B.poz.length}<span class="mu" style="font-size:12px">/${a.acik}</span></b><small>pozisyon</small></div><div><small>Nakit</small><b>${tl(B.nakit,0)}</b><small>₺</small></div></div>
-   <div class="dugmeler"><button class="btn" data-bot="${B.aktif?'durdur':'baslat'}">${B.aktif?IK.dur+' Duraklat':IK.bas+' Başlat'}</button><button class="btn ana" data-botayar="1">${IK.ayar} Bot ayarları</button></div></div>`;
+   <div class="dugmeler"><button class="btn" data-bot="${B.aktif?'durdur':'baslat'}">${B.aktif?IK.dur+' Duraklat':IK.bas+' Başlat'}</button><button class="btn ana" data-botayar="1">${IK.ayar} Bot ayarları</button></div>${B.ayar&&(B.ayar.risk>1.5||B.ayar.guven<65||!B.ayar.piyasa_filtre||B.ayar.kalite==='B'||B.ayar.kalite==='C'||!B.ayar.coklu_onay)?`<div class="kart pad" style="margin:12px 0 0;border-color:var(--wa)"><b style="font:700 14px var(--disp)">Ayarların çok agresif</b><p class="not" style="margin:6px 0 10px">Risk %${tl(B.ayar.risk,1)}, güven ${B.ayar.guven}+, kalite ${B.ayar.kalite}+${B.ayar.piyasa_filtre?'':', piyasa filtresi kapalı'}. Bu ayarlarla bot zayıf sinyallere de girer, kayıplar büyür. Önerilen: risk %1, güven 65+, kalite A+, filtreler açık.</p><button class="btn ana" data-bot="onerilen">Önerilen ayarlara geç</button></div>`:''}</div>`;
   x+=taniKart()+kayitSerit();
   const b=(k,t)=>`<button data-bt="${k}" class="${bt===k?'on':''}">${t}</button>`;
   x+=`<div class="seg" style="margin-top:16px">${b('ozet','Özet')}${b('poz','Pozisyon'+(B.poz.length?' · '+B.poz.length:''))}${b('islem','İşlemler')}${b('yaris','Yarış')}${b('analiz','Analiz')}${b('gun','Günlük')}${b('log','Kayıt')}</div><div>${({ozet:botOzet,poz:botPoz,islem:botIslem,yaris:botYaris,analiz:botAnaliz,gun:botGun,log:botLog}[bt]||botOzet)()}</div>`;
@@ -2265,7 +2266,7 @@ GITHUB_REPO = "kullanici-adin/didactic-barnacle"</span></li>
    <div class="dugmeler" style="padding:8px 0 0"><button class="btn" id="kb_kapat">Tamam</button></div>`;
   sheetAc();$('#kb_kapat').onclick=sheetKapat}
 function taniKart(){const t=B.tani;if(!t)return `<div class="kart pad" style="margin-top:12px"><b style="font:700 15px var(--disp)">Bot ne yapıyor?</b><p class="not" style="margin:6px 0 0">İlk tarama sürüyor. Tam tarama birkaç dakika alır; bot ilk taramadan sonra karar vermeye başlar.</p></div>`;
-  const ad={guven:'güven eşiğinin altında',kalite:'kalite yetersiz',haber:'olumsuz haber',gorulen:'zaten değerlendirildi',aralik:'fiyat giriş aralığı dışında',limit:'günlük işlem ya da pozisyon limiti dolu',elde:'hisse zaten elde',lot:'bütçe/lot yetmedi',mtf:'üst zaman dilimi ya da günlük trend onaylamadı'};
+  const ad={guven:'güven eşiğinin altında',kalite:'kalite yetersiz',haber:'olumsuz haber',gorulen:'zaten değerlendirildi',aralik:'fiyat giriş aralığı dışında',limit:'günlük işlem ya da pozisyon limiti dolu',elde:'hisse zaten elde',lot:'bütçe/lot yetmedi',mtf:'üst zaman dilimi ya da günlük trend onaylamadı',adim:'kuruşluk hisse (fiyat adımı stopa göre çok büyük)',ogrenme:'botun kendi geçmişinde kaybettiren kurulum/hisse'};
   const nl=Object.entries(t.neden||{}).sort((a,b)=>b[1]-a[1]);
   let ana;if(t.mesaj)ana=t.mesaj;
   else if(t.giris)ana=`Son taramada ${t.giris} yeni işleme girdi.`;
@@ -2917,6 +2918,23 @@ RAKIPLER = {
 }
 
 
+def fiyat_adimi(f: float) -> float:
+    """Borsa İstanbul pay piyasası fiyat adımı (kademe)."""
+    for sinir, adim in ((20, 0.01), (50, 0.02), (100, 0.05), (250, 0.10), (500, 0.25), (1000, 0.50), (2500, 1.0)):
+        if f < sinir:
+            return adim
+    return 2.5
+
+
+def kurulum_karnesi(islemler: list[dict]) -> dict:
+    """Botun KENDİ işlemlerinden kurulum türü başına kazanma oranı ve ortalama R."""
+    g = {}
+    for x in islemler[-300:]:
+        g.setdefault(x.get("kurulum") or "?", []).append(x)
+    return {k: dict(n=len(l), kaz=sum(1 for x in l if x["kz"] > 0) / len(l), R=float(np.mean([x.get("R", 0) for x in l])))
+            for k, l in g.items()}
+
+
 def _ep_dizi(df) -> np.ndarray:
     """Mum zamanlarını saniye cinsinden epoch olarak döndürür."""
     return pd.DatetimeIndex(df.index).as_unit("ns").asi8 // 10 ** 9
@@ -3227,15 +3245,20 @@ class CanliBot:
 
     def _stop_sebep(self, p):
         if p["stop"] > p["giris"] * 1.001:
-            return "İz süren stop (kârda)"
+            return "Kâr koruma stopu" if p.get("koru") and p["kademe"] == 0 and p["stop"] <= p["giris"] + 0.15 * (p["giris"] - p["stop0"]) else "İz süren stop (kârda)"
         return "Başabaş stop" if p["stop"] >= p["giris"] * 0.999 else "Stop"
 
     def _iz(self, p, tepe):
         """İz süren stop: fiyat 1R yol aldıktan sonra stop, en yüksek fiyatın 2,5 ATR altını takip eder (sadece yukarı)."""
         p["tepe"] = max(p.get("tepe", p["giris"]), tepe)
+        r0 = p["giris"] - p["stop0"]
+        # Kâr koruma: fiyat 0,8R yol aldıysa stop girişin biraz üstüne çekilir, kazanan işlem zarara dönmez
+        if p["kademe"] == 0 and p["tepe"] >= p["giris"] + 0.8 * r0:
+            koru = round(p["giris"] + 0.1 * r0, 4)
+            if koru > p["stop"]:
+                p["stop"], p["koru"] = koru, True
         if not self.d["ayar"].get("iz_stop") or not p.get("atr"):
             return
-        r0 = p["giris"] - p["stop0"]
         if p["tepe"] >= p["giris"] + r0:
             yeni = max(p["giris"], p["tepe"] - 2.5 * p["atr"])
             if yeni > p["stop"]:
@@ -3340,6 +3363,10 @@ class CanliBot:
                 liste = analiz.get(mod, {})
                 gorulen = set(d["gorulen"])
                 eldeki = {p["s"] for p in d["poz"]}
+                karne = kurulum_karnesi(d["islem"])
+                son_zarar = {}
+                for x in d["islem"][-60:]:                         # hisse başına art arda zarar sayısı
+                    son_zarar[x["s"]] = son_zarar.get(x["s"], 0) + 1 if x["kz"] <= 0 else 0
                 adaylar = []
                 for h, an in liste.items():
                     ctx = an["ctx"]
@@ -3373,6 +3400,12 @@ class CanliBot:
                         # Gecikmeli veri yüzünden fiyat biraz kaçmış olabilir: 0,35 ATR'ye kadar tolerans, ama H1'e kalan
                         # kazanç kalan riskten az olmamalı
                         kalan_kz = (s["hedef"] - f) / max(f - s["stop"], 1e-9)
+                        adim = fiyat_adimi(f)
+                        if adim / f > 0.004 or adim > 0.35 * atr_i or (f - s["stop"]) < 3 * adim:
+                            ekle("adim"); continue                # kuruşluk hisse: bir kademe bile stopu yer, gürültü çok
+                        kk = karne.get(s.get("kurulum") or "?")
+                        if (kk and kk["n"] >= 4 and kk["kaz"] < 0.3 and kk["R"] < 0) or son_zarar.get(h, 0) >= 2:
+                            ekle("ogrenme"); continue             # botun kendi geçmişinde kaybettiren kurulum / hisse
                         if f <= s["stop"] or f < s["giris_alt"] - 0.1 * atr_i or f > s["giris_ust"] + 0.35 * atr_i or kalan_kz < 1.0:
                             ekle("aralik"); continue
                         adaylar.append((KALITE_SIRA[j["kalite"]], -s["guven"], h, s, j, anahtar, an))
@@ -3449,6 +3482,11 @@ class CanliBot:
                                    f"günlük zarar limiti {'%' + sayi(yeni['gunluk_zarar'], 1) if yeni['gunluk_zarar'] else 'kapalı'}, "
                                    f"piyasa filtresi {'açık (' + sayi(yeni['piyasa_esik'], 1) + '%)' if yeni['piyasa_filtre'] else 'kapalı'}")
                 mesaj = mesaj or "Ayarlar kaydedildi"
+            elif k == "onerilen":
+                d["ayar"] = dict(d["ayar"], risk=1.0, guven=65, kalite="A", piyasa_filtre=True, piyasa_esik=-1.5,
+                                 gunluk_zarar=3.0, iz_stop=True, guven_lot=True, coklu_onay=True, gunluk=min(d["ayar"]["gunluk"], 8))
+                self._log("bilgi", "Önerilen ayarlara geçildi: risk %1, güven 65+, kalite A+, piyasa filtresi ve çoklu zaman onayı açık")
+                mesaj = "Önerilen (daha seçici) ayarlar uygulandı"
             elif k == "baslat":
                 d["aktif"] = True
                 self._log("bilgi", "Bot başlatıldı")
@@ -3963,29 +4001,76 @@ class Servis:
                 .replace("__VERI__", self.veri))
 
     def _dongu(self):
-        """Hızlı tarama + bot sürekli döner; uzun süren derin geçmiş testi AYRI iş parçacığında çalışır,
-        böylece seans içinde botu bekletmez."""
-        self._derin_calisiyor = False
+        """Hızlı tarama + bot sürekli döner. Derin geçmiş testi sadece seans KAPALIYKEN ve sırayla çalışır
+        (bellek sınırını aşmamak ve seans içinde botu bekletmemek için)."""
         while True:
             try:
                 self._tur(derin=False)
                 self.hata = None
             except Exception as e:  # noqa: BLE001
                 self.hata = f"{type(e).__name__}: {e}"
+            gc.collect()
             acik = seans_acik_mi()
-            aralik = 7200 if acik else 1800          # seans içinde derin test 2 saatte bir, dışında yarım saatte bir
-            if not self._derin_calisiyor and time.time() - self.derin_zaman > aralik:
-                self._derin_calisiyor = True
-                threading.Thread(target=self._derin_is, daemon=True).start()
-            time.sleep(45 if acik else 900)
+            if not acik and time.time() - self.derin_zaman > 3 * 3600:
+                try:
+                    self._derin()
+                except Exception as e:  # noqa: BLE001
+                    self.hata = f"Derin test: {type(e).__name__}: {e}"
+                gc.collect()
+            time.sleep(45 if acik else 600)
 
-    def _derin_is(self):
-        try:
-            self._tur(derin=True)
-        except Exception as e:  # noqa: BLE001
-            self.hata = f"Derin test: {type(e).__name__}: {e}"
-        finally:
-            self._derin_calisiyor = False
+    def _derin(self):
+        """Geçmiş test, karne, öğrenen model ve hata analizi. Her zaman dilimi ayrı ayrı ve hisse hisse işlenir;
+        analiz biter bitmez büyük veri bellekten atılır, sadece sinyal sonuçları kalır."""
+        gunluk = self.gunluk or gunluk_veri()
+        self.gunluk = gunluk
+        likitler = [h for h in TUM_HISSELER if h in gunluk and len(gunluk[h]) >= 20
+                    and (gunluk[h]["Close"] * gunluk[h]["Volume"]).tail(20).mean() / 1e6 >= MIN_LIKIDITE]
+        hizli = sorted(likitler, key=lambda h: -(gunluk[h]["Close"] * gunluk[h]["Volume"]).tail(20).mean())[:HIZLI_EVREN]
+        xug = gunluk.get("XU100")
+        xu = _gun_ici(["XU100"]).get("XU100")
+        if (xu is None or len(xu) <= 40) and xug is not None and len(xug) > 60:
+            xu = pd.DataFrame({"Close": xug["Close"].shift(1)}).dropna()
+            xu.index = xu.index.tz_localize(TZ) + pd.Timedelta(hours=9)
+        acik = seans_acik_mi()
+        for mod in ("w", "g", "5", "1"):
+            semb = hizli if mod in ("1", "5") else likitler
+            if mod == "w":
+                kaynak = gunluk
+            else:
+                kaynak = _gun_ici(semb, *({"g": ("30d", "15m"), "5": ("20d", "5m"), "1": ("5d", "1m")}[mod]))
+            tum = []
+            for h in semb:
+                try:
+                    a = hisse_analiz(h, kaynak.get(h), gunluk.get(h), xug if mod == "w" else xu, not acik, tam_test=True, mod=mod)
+                except Exception:  # noqa: BLE001
+                    a = None
+                if not a:
+                    continue
+                f = filtrele(a["sinyaller"], ESIK)
+                df, n = a["ctx"]["df"], a["ctx"]["n"]
+                for s_ in f:
+                    s_["sym"] = h
+                self.derin_sin[mod][h] = [kompakt(sinyal_json(s_, df, n, a["fiyat"], mod)) for s_ in f]
+                for s_ in f:                              # sinyal kayıtlarında büyük nesne tutma
+                    s_.pop("_j", None)
+                tum += f
+                del a
+            del kaynak
+            self.karne[mod], AGIRLIK[mod] = karne_hesapla(tum)
+            self.bot[mod] = bot_portfoyu(tum)
+            hatalardan_ogren(tum, mod)
+            try:
+                self.kayip[mod] = kayip_analizi(sinyal_kayitlari(tum, None))
+            except Exception:  # noqa: BLE001
+                self.kayip[mod] = []
+            try:
+                MODEL[mod] = model_egit(tum)
+            except Exception as e:  # noqa: BLE001
+                MODEL[mod] = dict(aktif=False, n=0, auc=None, neden=f"eğitim hatası: {e}")
+            del tum
+            gc.collect()
+        self.derin_zaman = time.time()
 
     def _tur(self, derin: bool):
         acik = seans_acik_mi()
