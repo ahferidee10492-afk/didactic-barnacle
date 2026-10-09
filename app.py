@@ -19,6 +19,7 @@ import bisect
 import datetime as dt
 import base64
 import gc
+import gzip
 import json
 import os
 import threading
@@ -168,9 +169,9 @@ def _toplu(semboller: list[str], period: str, interval: str, parca: int = 80) ->
     return sonuc
 
 
-def gunluk_veri() -> dict:
+def gunluk_veri(donem: str = "1y") -> dict:
     """Tüm hisselerin 1 yıllık günlük verisi (likidite ve günlük trend için)."""
-    v = _toplu([f"{h}.IS" for h in TUM_HISSELER] + ["XU100.IS"], "1y", "1d", parca=120)
+    v = _toplu([f"{h}.IS" for h in TUM_HISSELER] + ["XU100.IS"], donem, "1d", parca=120)
     out = {}
     for s, df in v.items():
         df = df.copy()
@@ -2464,7 +2465,7 @@ GITHUB_REPO = "kullanici-adin/didactic-barnacle"</span></li>
    <div class="dugmeler" style="padding:8px 0 0"><button class="btn" id="kb_kapat">Tamam</button></div>`;
   sheetAc();$('#kb_kapat').onclick=sheetKapat}
 function taniKart(){const t=B.tani;if(!t)return `<div class="kart pad" style="margin-top:12px"><b style="font:700 15px var(--disp)">Bot ne yapıyor?</b><p class="not" style="margin:6px 0 0">İlk tarama sürüyor. Tam tarama birkaç dakika alır; bot ilk taramadan sonra karar vermeye başlar.</p></div>`;
-  const ad={guven:'güven eşiğinin altında',kalite:'kalite yetersiz',haber:'olumsuz haber',gorulen:'zaten değerlendirildi',aralik:'fiyat giriş aralığı dışında',limit:'günlük işlem ya da pozisyon limiti dolu',elde:'hisse zaten elde',lot:'bütçe/lot yetmedi',mtf:'üst zaman dilimi ya da günlük trend onaylamadı',bekleyen:'fiyat kaçtı, limit emir bırakıldı',adim:'kuruşluk hisse (fiyat adımı stopa göre çok büyük)',ogrenme:'botun kendi geçmişinde kaybettiren kurulum/hisse'};
+  const ad={guven:'güven eşiğinin altında',kalite:'kalite yetersiz',haber:'olumsuz haber',gorulen:'zaten değerlendirildi',aralik:'fiyat giriş aralığı dışında',limit:'günlük işlem ya da pozisyon limiti dolu',elde:'hisse zaten elde',lot:'bütçe/lot yetmedi',mtf:'üst zaman dilimi ya da günlük trend onaylamadı',bekleyen:'fiyat kaçtı, limit emir bırakıldı',kapali:'senin kapattığın sinyal türü',adim:'kuruşluk hisse (fiyat adımı stopa göre çok büyük)',ogrenme:'botun kendi geçmişinde kaybettiren kurulum/hisse'};
   const nl=Object.entries(t.neden||{}).sort((a,b)=>b[1]-a[1]);
   let ana;if(t.mesaj)ana=t.mesaj;
   else if(t.giris)ana=`Son taramada ${t.giris} yeni işleme girdi.`;
@@ -2613,6 +2614,14 @@ function botGrafikKur(){if(botChart){botChart.remove();botChart=null}const el=$(
   const s=botChart.addAreaSeries({lineColor:c,topColor:iz?'rgba(255,255,255,.22)':up?'rgba(12,148,102,.3)':'rgba(217,60,69,.3)',bottomColor:'rgba(0,0,0,0)',lineWidth:2.5,priceLineVisible:false});
   s.setData(eg.map(x=>({time:x[0]+10800,value:x[1]})));s.createPriceLine({price:B.ayar.butce,color:cv('--mu2'),lineStyle:2,lineWidth:1,axisLabelVisible:true,title:'bütçe'});
   botChart.timeScale().fitContent();new ResizeObserver(()=>botChart&&botChart.applyOptions({width:el.clientWidth})).observe(el)}
+function kurulumListe(a){const K=(V.karne||{})[a.dilim]||[],C=B.kurulum_canli||{},kap=new Set(a.kapali||[]);
+  const anahtarlar=[...new Set([...K.map(k=>k.k),...Object.keys(C)])].filter(k=>k&&k!=='?');if(!anahtarlar.length)return '';
+  const ad=k=>(K.find(x=>x.k===k)||{}).ad||(k.startsWith('f-')?k.slice(2)+' kırılımı':k);
+  const sat=anahtarlar.map(k=>{const t=K.find(x=>x.k===k),c=C[k];const kot=(c&&c.n>=4&&c.R<0)||(t&&t.n>=15&&(t.isabet||0)<35);
+    return {k,html:`<div class="anahtar ${kap.has(k)?'':'on'}" data-kur="${k}" style="padding:10px 12px"><div><b style="font-size:13.5px">${esc(ad(k))}</b>
+     <div class="mu" style="font-size:11.5px;font-weight:600">${t?`Test: ${t.n} sinyal · isabet %${t.isabet??'—'}`:'Test verisi yok'}${c?` · <span class="${c.R>=0?'up':'dn'}">Canlı: ${c.n} işlem · %${c.kaz} · ${c.R>=0?'+':'−'}${tl(Math.abs(c.R),2)}R</span>`:''}${kot?' · <b class="dn">zayıf</b>':''}</div></div><span class="tg"></span></div>`,s:(c?c.R:0)+(t?((t.isabet||40)-40)/100:0)}}).sort((x,y)=>y.s-x.s);
+  return `<div class="alanf"><span class="lbl">Sinyal türleri · ${anahtarlar.length-kap.size}/${anahtarlar.length} açık</span><div class="mu" style="font-size:12px;font-weight:600;margin:2px 0 8px">Kapattığın türe bot hiç girmez. "Zayıf" işaretliler testte ya da canlıda kaybettirenler.</div>
+   <div style="display:grid;gap:6px">${sat.map(x=>x.html).join('')}</div></div>`}
 function botAyarAc(){const a=Object.assign({},B.ayar);
   const sec=(ad,liste,v,yazi)=>`<div class="chips" style="margin:0 0 4px;padding:0;flex-wrap:wrap">${liste.map(k=>`<button class="chip${String(v)===String(k)?' on':''}" data-sec="${ad}" data-v="${k}">${yazi?yazi(k):k}</button>`).join('')}</div>`;
   const ciz=()=>{$('#form').innerHTML=`<div class="tutamak"></div><h2>Bot ayarları</h2><p class="acik-not">Bot sanal bütçeyle gerçek seans verisinde işlem yapar; parana dokunmaz. Sonuçlar modelin canlıda ne kadar tutarlı olduğunu gösterir.</p>
@@ -2623,6 +2632,8 @@ function botAyarAc(){const a=Object.assign({},B.ayar);
     <div class="alanf"><span class="lbl">İşlem başı risk</span>${sec('risk',[0.5,1,1.5,2,3],a.risk,k=>'%'+tl(k,1))}</div>
     <div class="alanf"><span class="lbl">En düşük sinyal kalitesi</span>${sec('kalite',['A+','A','B'],a.kalite,k=>k+(k==='B'?' ve üstü':k==='A'?' ve üstü':' sadece'))}</div>
     <label class="alanf"><span class="lbl">En düşük güven: <b class="act" id="b_gv">${a.guven}</b></span><input type="range" id="b_guven" min="50" max="90" step="5" value="${a.guven}"></label>
+    <div class="alanf"><span class="lbl">Komisyon (alışta ve satışta ayrı)</span>${sec('komisyon',[0,0.05,0.1,0.15,0.2],a.komisyon??0.1,k=>+k?'%'+tl(k,2):'Yok')}<div class="mu" style="font-size:12px;font-weight:600;margin-top:4px">Aracı kurumunun komisyonu (BSMV dahil). Binde 1 = %0,10. Kayma ayrıca hesaplanır.</div></div>
+    ${kurulumListe(a)}
     <div class="alanf"><span class="lbl">Günlük zarar limiti</span>${sec('gunluk_zarar',[0,2,3,5],a.gunluk_zarar,k=>+k?'%'+k:'Kapalı')}<div class="mu" style="font-size:12px;font-weight:600;margin-top:4px">Gün içinde bu kadar kayıpta bot o gün yeni işlem açmaz; açık pozisyonları takip etmeye devam eder.</div></div>
     ${[['hizli','15 dk + 5 dk birlikte tara','15 dk grafiğe ek olarak en likit 60 hissede 5 dk sinyallerine de girer (daha çok işlem; 5 dk işlemleri gün sonunda kapanır)'],['aktif_yonetim','Aktif işlem yönetimi','Kazanana ekleme, momentum kaybolunca erken çıkış, olumsuz haberde çıkış, piyasa sert düşünce yarıya indirme'],['coklu_onay','Çoklu zaman onayı','Sinyal ancak üst zaman dilimi ve günlük trend de aynı yöndeyse alınır'],['iz_stop','İz süren stop','Fiyat 1R yol alınca stop en yüksek fiyatın 2,5 ATR altını takip eder, kârı korur'],['guven_lot','Güvene göre pozisyon','Güveni yüksek sinyalde daha büyük, düşükte daha küçük pozisyon (0,5x–1,5x)']].map(([k,ad,ac])=>`<div class="alanf"><div class="anahtar ${a[k]?'on':''}" data-sec="${k}" data-v="${a[k]?0:1}"><div><b style="font-size:14px">${ad}</b><div class="mu" style="font-size:12px;font-weight:600">${ac}</div></div><span class="tg"></span></div></div>`).join('')}
     <div class="alanf"><div class="anahtar ${a.piyasa_filtre?'on':''}" data-sec="piyasa_filtre" data-v="${a.piyasa_filtre?0:1}"><div><b style="font-size:14px">Piyasa filtresi</b><div class="mu" style="font-size:12px;font-weight:600">BIST100 sert düşerken AL sinyallerine girme</div></div><span class="tg"></span></div>
@@ -2631,12 +2642,13 @@ function botAyarAc(){const a=Object.assign({},B.ayar);
     <button class="btn kir" style="width:100%;margin-top:10px" id="b_sifirla">Sıfırla ve yeni bütçeyle başlat</button>
     <p class="not">Bütçe değişikliği, bot henüz işlem yapmadıysa hemen uygulanır; yaptıysa sıfırlama gerekir. Giriş/çıkışta %0,05 kayma hesaba katılır. 1 ve 5 dk işlemleri gün sonunda kapatılır.</p>`};
   ciz();sheetAc();
-  $('#form').onclick=e=>{const t=e.target.closest('[data-sec],[data-adim],#b_kaydet,#b_sifirla');if(!t)return;
+  $('#form').onclick=e=>{const t=e.target.closest('[data-kur],[data-sec],[data-adim],#b_kaydet,#b_sifirla');if(!t)return;
     a.butce=parseFloat(String($('#b_butce').value).replace(/\./g,'').replace(',','.'))||a.butce;a.guven=+$('#b_guven').value;
-    if(t.dataset.sec){const k=t.dataset.sec,v=t.dataset.v;a[k]=['piyasa_filtre','iz_stop','guven_lot','coklu_onay','hizli','aktif_yonetim'].includes(k)?v==='1':['risk','gunluk_zarar','piyasa_esik'].includes(k)?+v:v;ciz();baglaGv()}
+    if(t.dataset.kur){const k=t.dataset.kur,l=new Set(a.kapali||[]);l.has(k)?l.delete(k):l.add(k);a.kapali=[...l];ciz();baglaGv()}
+    else if(t.dataset.sec){const k=t.dataset.sec,v=t.dataset.v;a[k]=['piyasa_filtre','iz_stop','guven_lot','coklu_onay','hizli','aktif_yonetim'].includes(k)?v==='1':['risk','gunluk_zarar','piyasa_esik','komisyon'].includes(k)?+v:v;ciz();baglaGv()}
     else if(t.dataset.adim){const[k,d]=t.dataset.adim.split(':');a[k]=Math.max(1,Math.min(k==='gunluk'?50:20,a[k]+ +d));ciz();baglaGv()}
     else{const qs=new URLSearchParams({bot:t.id==='b_sifirla'?'sifirla':'ayar',butce:Math.round(a.butce),gunluk:a.gunluk,acik:a.acik,risk:a.risk,guven:a.guven,dilim:a.dilim,kalite:a.kalite,
-      gunluk_zarar:a.gunluk_zarar,piyasa_filtre:a.piyasa_filtre?1:0,piyasa_esik:a.piyasa_esik,iz_stop:a.iz_stop?1:0,guven_lot:a.guven_lot?1:0,coklu_onay:a.coklu_onay?1:0,hizli:a.hizli?1:0,aktif_yonetim:a.aktif_yonetim?1:0});
+      gunluk_zarar:a.gunluk_zarar,piyasa_filtre:a.piyasa_filtre?1:0,piyasa_esik:a.piyasa_esik,iz_stop:a.iz_stop?1:0,guven_lot:a.guven_lot?1:0,coklu_onay:a.coklu_onay?1:0,hizli:a.hizli?1:0,aktif_yonetim:a.aktif_yonetim?1:0,komisyon:a.komisyon??0.1,kapali:(a.kapali||[]).join(',')||'-'});
       if(t.id==='b_sifirla'&&!confirm('Bot tüm geçmişiyle sıfırlanacak. Emin misin?'))return;sheetKapat();ustGit('?'+qs.toString())}};
   const baglaGv=()=>{const g=$('#b_guven');g.oninput=e=>$('#b_gv').textContent=e.target.value};baglaGv()}
 function sheetAc(){$('#form').classList.add('ac');$('#perde').classList.add('ac')}
@@ -3025,6 +3037,15 @@ function kListe(){const l=liste_.filter(h=>fav.has(h.s));if(!l.length)return ['L
 const YARDIM=['Piyasa nasıl?','En iyi sinyaller','Bot ne yaptı?','Ne öğrendin?','Haberler','Yükselenler','Düşenler','Sektörler','Listem'];
 function kYardim(){return [`Bana bir hisse kodu yazabilirsin (örneğin <a class="sl" data-sor="THYAO">THYAO</a>), ya da şunları sorabilirsin: ${YARDIM.map(y=>`<a class="sl" data-sor="${y}">${y.toLocaleLowerCase('tr-TR')}</a>`).join(', ')}. "5 dk grafiğe geç", "botu durdur", "ayarlar" gibi komutları da anlarım.`]}
 function selam(){const sa=new Date().getHours();return sa<6?'İyi geceler.':sa<12?'Günaydın.':sa<18?'İyi günler.':'İyi akşamlar.'}
+function kRapor(){if(!B||!B.ayar)return [];const bug=new Date().toLocaleDateString('tr-TR',{day:'2-digit',month:'2-digit'}),g=B.bugun||{};
+  const kap=(B.islem||[]).filter(t=>t.c&&t.c.startsWith(bug)),kaz=kap.filter(t=>t.kz>0).length,top=kap.reduce((a,t)=>a+t.kz,0);
+  const yr=[...(B.yaris||[])].sort((a,b)=>(b.getiri||0)-(a.getiri||0));
+  let x=`<div class="kc"><div class="kb"><span class="baslik2">Günün raporu · ${bug}</span><span class="rozet ${yon(top)}">${tlk(top)}</span></div>
+   <div class="mu" style="font-size:12.5px;font-weight:600;margin-top:4px">${kap.length} işlem kapandı, ${kaz} kazanç · ${B.poz.length} pozisyon geceye taşınıyor</div></div>`;
+  x+=kap.slice(0,8).map(t=>`<div class="srow" data-h="${t.s}" data-m="${t.mod}">${av(t.s,30)}<div class="ad"><b>${t.s}</b><small>${esc(t.sebep)}</small></div><div class="sag"><b class="${yon(t.kz)}">${tlk(t.kz)}</b><small class="${yon(t.R)}">${t.R>=0?'+':''}${tl(t.R,1)}R</small></div></div>`).join('');
+  if(yr.length)x+=`<div class="kc"><div class="baslik2" style="margin-bottom:6px">Bot yarışı (başlangıçtan beri)</div>${yr.map((r,i)=>`<div class="sat1" style="font-size:13px;padding:3px 0"><span><b>${i+1}.</b> ${esc(r.ad)}</span><b class="${yon(r.getiri||0)}">${yz(r.getiri||0,1)}</b></div>`).join('')}</div>`;
+  x+=`<div class="kbtn">${btn('data-git="bot"','Terminali aç',1)}${btn('data-sor="Ne öğrendin?"','Ne öğrendin?')}</div>`;
+  return [kap.length?`Seans bitti. Bugün ${kap.length} işlem kapandı, ${kaz} tanesi kazançla.`:'Seans bitti. Bugün kapanan işlem olmadı.',kartP(x)]}
 function brif(){const b=V.bist,nal=aktifler.filter(h=>h[M].akt.yon>0).length;const p=[];
   p.push(`${selam()} ${b?`BIST 100 ${b.d>=0?'yükselişte':'düşüşte'}, <b class="${yon(b.d)}">${yz(b.d)}</b>.`:''} ${V.seans?'Seans açık.':'Seans kapalı, son veriler '+esc(V.guncelleme)+' itibarıyla.'}`);
   p.push(kPiyasa());
@@ -3049,6 +3070,7 @@ function anla(q){const t=trk(q).trim(),ust=q.toLocaleUpperCase('tr-TR');
   if(/başlat|çalıştır/.test(t)&&/bot/.test(t)){ustGit('?bot=baslat');return ['Botu başlatıyorum.']}
   if(/ayar|tema|görünüm/.test(t)&&!/bot/.test(t)){setTimeout(()=>git('profil'),400);return ['Ayarları açıyorum.']}
   if(/bot.*ayar|ayar.*bot/.test(t)){setTimeout(botAyarAc,300);return ['Bot ayarlarını açıyorum.']}
+  if(/rapor|bugün ne|gün nasıl|günün/.test(t))return kRapor();
   if(/öğren|ders|beyin|seviye|tecrübe/.test(t))return kDers();
   if(/pozisyon|bot|işlem|portföy|kâr|kar\b|zarar|ne yaptı|bakiye|para/.test(t))return kBot();
   if(/haber/.test(t))return kHaber();
@@ -3072,7 +3094,7 @@ function oneriCiz(){const son=SB.slice(-6).map(m=>m.h).join(' ');const kl=[...so
 function otoCiz(){const v=$('#sq').value.toLocaleUpperCase('tr-TR').replace(/İ/g,'I').trim();if(v.length<2||/\s/.test(v)){oneriCiz();return}
   const l=Object.keys(H).filter(k=>k.startsWith(v)).slice(0,8);if(!l.length){oneriCiz();return}
   $('#soneri').innerHTML=l.map(k=>`<button class="hs" data-sor="${k}">${k} <span class="${yon((H[k][M]||{}).d||0)}">${H[k][M]?yz(H[k][M].d,1):''}</span></button>`).join('')}
-function sbBas(){const b=V.bist;$('#sbas').innerHTML=`<span class="sav ${V.seans?'on':''}">${LOGO}</span><div class="sad"><b>Radar</b><small>${V.seans?'Seans açık':'Seans kapalı'} · ${esc(V.guncelleme)} verisi · ${GOSTER[M]}</small></div>
+function sbBas(){const b=V.bist;$('#sbas').innerHTML=`<span class="sav ${V.seans?'on':''}">${LOGO}</span><div class="sad"><b>Radar</b><small>${V.eski?'Son kayıt '+esc(V.guncelleme)+' · yenileniyor…':`${V.seans?'Seans açık':'Seans kapalı'} · ${esc(V.guncelleme)} verisi · ${GOSTER[M]}`}</small></div>
   ${b?`<button class="spill" data-sor="Piyasa nasıl?"><b>${tl(b.p,0)}</b><span class="${yon(b.d)}">${yz(b.d)}</span></button>`:''}${B&&B.ayar?`<button class="spill" data-sor="Bot ne yaptı?"><b>Bot</b><span class="${yon(B.kz||0)}">${yz(B.kz_yuzde)}</span></button>`:''}
   <button class="ikon" data-menu="1" title="Menü">${IK.ayar}</button>`;
   const bt_=$('#sbant');if(bt_)bt_.innerHTML=kayanBant()}
@@ -3111,12 +3133,14 @@ function acilisSohbet(){sbBas();sbCiz();const p=[],son=D.get('sb_son',0),simdi=D
   const gor=new Set(D.get('sb_sin',[]));const yeniA=aktifler.filter(h=>h[M].akt.kalite==='A+'&&!gor.has(h.s+h[M].akt.t)).slice(0,2);
   if(!yeniGun&&yeniA.length)p.push(`Yeni ${yeniA.length>1?'A+ fırsatlar':'bir A+ fırsat'} çıktı:`,kartP(yeniA.map(h=>sinSatir(h)).join('')));
   yeniA.forEach(h=>gor.add(h.s+h[M].akt.t));D.set('sb_sin',[...gor].slice(-200));
+  const bugK=new Date().toDateString();if(new Date().getHours()>=18&&new Date().getDay()%6!==0&&D.get('sb_rapor','')!==bugK){p.push(...kRapor());D.set('sb_rapor',bugK)}
   D.set('sb_son',simdi);if(p.length)botYaz(...p);else oneriCiz()}
 
 if(MESAJ)setTimeout(()=>toast(MESAJ),400);
 ciz(true);window.addEventListener('resize',()=>{navCiz();indX=null;ustCiz()});
 if(D.get('sayfa',0))sayfaAc();
 acilisSohbet();
+if(V.eski){setTimeout(()=>toast('Son kaydedilen veriler gösteriliyor, güncel tarama birkaç dakika sürüyor'),900);setTimeout(()=>{if(!document.hidden&&!$('#form').classList.contains('ac'))yenile()},60000)}
 const ds=D.get('detay',null);if(!MESAJ&&Array.isArray(ds)&&H[ds[0]])detayAc(ds[0],ds[1]);
 </script></body></html>
 """
@@ -3239,7 +3263,7 @@ def karne_hesapla(sinyaller: list[dict]) -> tuple[list, dict]:
                 bonus = -25
         agirlik[k] = dict(bonus=bonus, isabet=isabet or 0)
         ad = KURULUM_ADI.get(k, k[2:] + " kırılımı" if k.startswith("f-") else k)
-        tablo.append(dict(ad=ad, n=len(l), hedef=hedef, stop=stop, isabet=_r(isabet, 0), ort=_r(ort, 2), bonus=bonus))
+        tablo.append(dict(k=k, ad=ad, n=len(l), hedef=hedef, stop=stop, isabet=_r(isabet, 0), ort=_r(ort, 2), bonus=bonus))
     tablo.sort(key=lambda x: -(x["isabet"] or 0))
     return tablo, agirlik
 
@@ -3334,7 +3358,7 @@ def akis_olaylari(analiz: dict) -> list[dict]:
 BOT_DOSYA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_canli.json")
 KAYMA = 0.0005          # her alış ve satışta %0,05 kayma (gerçekçi dolum için)
 KALITE_SIRA = {"A+": 0, "A": 1, "B": 2, "C": 3}
-BOT_VARSAYILAN = dict(butce=100000.0, gunluk=8, hizli=True, aktif_yonetim=True, acik=3, risk=1.0, guven=65, dilim="g", kalite="A",
+BOT_VARSAYILAN = dict(butce=100000.0, gunluk=8, hizli=True, aktif_yonetim=True, komisyon=0.1, kapali=[], acik=3, risk=1.0, guven=65, dilim="g", kalite="A",
                       gunluk_zarar=3.0, piyasa_filtre=True, piyasa_esik=-1.5, iz_stop=True, guven_lot=True, coklu_onay=True)
 # Bot yarışı: aynı anda farklı tarzda çalışan rakip botlar (ayarları sabit, karşılaştırma için)
 RAKIPLER = {
@@ -3342,8 +3366,8 @@ RAKIPLER = {
                    ayar=dict(BOT_VARSAYILAN, kalite="A+", guven=75, acik=2, gunluk=3, coklu_onay=True, hizli=False)),
     "atak": dict(ad="Atak", aciklama="B ve üstü, güven 55+, 5 pozisyon, çoklu zaman onayı yok",
                  ayar=dict(BOT_VARSAYILAN, kalite="B", guven=55, acik=5, gunluk=10, coklu_onay=False, guven_lot=False)),
-    "swing": dict(ad="Swing", aciklama="Günlük grafik, haftalarca taşıyan işlemler",
-                  ayar=dict(BOT_VARSAYILAN, dilim="w", kalite="A", guven=65, acik=4, gunluk=3, risk=1.5)),
+    "swing": dict(ad="Swing", aciklama="Günlük grafik, B ve üstü, güven 60+, günler-haftalar taşır",
+                  ayar=dict(BOT_VARSAYILAN, dilim="w", kalite="B", guven=60, acik=5, gunluk=3, risk=1.0, coklu_onay=False, hizli=False)),
 }
 
 
@@ -3644,7 +3668,7 @@ class CanliBot:
     def _al(self, h, mod, s, j, an, t, karar: dict | None = None) -> bool:
         d, a = self.d, self.d["ayar"]
         fiyat = float(an["fiyat"])
-        giris = fiyat * (1 + KAYMA)
+        giris = fiyat * (1 + KAYMA + a.get("komisyon", 0.1) / 100)   # kayma + aracı kurum komisyonu
         stop = float(s["stop"])
         rb = giris - stop
         if rb <= giris * 0.001:
@@ -3678,7 +3702,7 @@ class CanliBot:
         if p not in self.d["poz"] or lot <= 0:
             return
         lot = min(int(lot), p["kalan"])
-        net = fiyat * (1 - KAYMA)
+        net = fiyat * (1 - KAYMA - self.d["ayar"].get("komisyon", 0.1) / 100)
         kz = (net - p["giris"]) * lot
         self.d["nakit"] += net * lot
         p["kalan"] -= lot
@@ -3778,7 +3802,7 @@ class CanliBot:
         if fiyat < g0 + 0.8 * r0 or c <= nanv(A["EMA20"][n - 1], c) or fiyat >= p["h"][0]:
             return False
         ek = int(p["lot"] * 0.5)
-        al = fiyat * (1 + KAYMA)
+        al = fiyat * (1 + KAYMA + self.d["ayar"].get("komisyon", 0.1) / 100)
         if ek < 1 or ek * al > self.d["nakit"]:
             return False
         self.d["nakit"] -= ek * al
@@ -3878,7 +3902,8 @@ class CanliBot:
             gun = d["gunler"].setdefault(bugun, dict(kz=0.0, al=0, oz=None))
             ana_mod = a["dilim"]
             modlar = [ana_mod] + (["5"] if a.get("hizli") and ana_mod == "g" else [])
-            gec_mod = lambda m: m in ("1", "5") and simdi.time() >= dt.time(17, 40)  # noqa: E731
+            # Veri ~15 dk gecikmeli: 15 dk işlemlerde 17:15 sonrası, 1/5 dk işlemlerde 17:40 sonrası yeni giriş yok
+            gec_mod = lambda m: (m in ("1", "5") and simdi.time() >= dt.time(17, 40)) or (m == "g" and simdi.time() >= dt.time(17, 15))  # noqa: E731
             gec = gec_mod(ana_mod)
             # Günlük zarar limiti: gün başındaki değere göre kayıp sınırı aşılınca o gün yeni işlem yok
             oz_simdi = self._ozkaynak()
@@ -3909,7 +3934,7 @@ class CanliBot:
             elif not d["aktif"]:
                 tani["mesaj"] = "Bot duraklatılmış; yeni işleme girmiyor."
             elif gec:
-                tani["mesaj"] = "1 ve 5 dk işlemleri için gün sonu yaklaştı (17:40 sonrası yeni işlem yok)."
+                tani["mesaj"] = "Kapanış yaklaştı: veri 15 dk gecikmeli olduğu için 15 dk işlemlerde 17:15, 1/5 dk işlemlerde 17:40 sonrası yeni işlem açılmıyor."
             elif zarar_kilit:
                 tani["mesaj"] = "Günlük zarar limiti doldu; bugün yeni işlem yok."
             elif piyasa_kilit:
@@ -3940,7 +3965,7 @@ class CanliBot:
                         for s in filtrele(an["sinyaller"], ESIK)[-2:]:
                             if s["yon"] <= 0 or s["sonuc"] != "açık":
                                 continue
-                            if n - 1 - s["i"] > {"1": 6, "5": 2}.get(mod, 1):
+                            if n - 1 - s["i"] > {"1": 6, "5": 2, "w": 2}.get(mod, 1):
                                 continue                              # eski sinyal (1 dk: son 7, 5 dk: son 3, diğer: son 2 mum)
                             tani["sinyal"] += 1
                             j = sinyal_json(s, df, n, an["fiyat"], mod)
@@ -3956,6 +3981,8 @@ class CanliBot:
                                 ekle("kalite"); continue
                             if a.get("coklu_onay") and (s.get("mtf", 0) <= 0 or s.get("htf_yon", 0) < 0):
                                 ekle("mtf"); continue                 # üst zaman dilimi ve günlük trend onaylamıyor
+                            if (s.get("kurulum") or "?") in (a.get("kapali") or []):
+                                ekle("kapali"); continue              # kullanıcının kapattığı sinyal türü
                             if s.get("haber_skor", 0) <= -2:
                                 ekle("haber"); continue               # olumsuz haber akışı olan hisseye girilmez
                             anahtar = f"{h}-{mod}-{j['t']}"
@@ -4061,6 +4088,13 @@ class CanliBot:
             for anahtar in ("piyasa_filtre", "iz_stop", "guven_lot", "coklu_onay", "hizli", "aktif_yonetim"):
                 if q.get(anahtar) in ("0", "1"):
                     yeni[anahtar] = q[anahtar] == "1"
+            if "kapali" in q:
+                yeni["kapali"] = [k for k in str(q["kapali"]).split(",") if k and k != "-"][:40]
+            if "komisyon" in q:
+                try:
+                    yeni["komisyon"] = min(max(float(str(q["komisyon"]).replace(",", ".")), 0.0), 1.0)
+                except ValueError:
+                    pass
             if q.get("kalite") in KALITE_SIRA:
                 yeni["kalite"] = q["kalite"]
             t = int(time.time())
@@ -4179,7 +4213,7 @@ class CanliBot:
             saat = lambda t: dt.datetime.fromtimestamp(t, TZ).strftime("%d.%m %H:%M")  # noqa: E731
             poz = []
             for p in d["poz"]:
-                pk = p["realize"] + (p["fiyat"] * (1 - KAYMA) - p["giris"]) * p["kalan"]
+                pk = p["realize"] + (p["fiyat"] * (1 - KAYMA - a.get("komisyon", 0.1) / 100) - p["giris"]) * p["kalan"]
                 poz.append(dict(id=p["id"], s=p["s"], mod=p["mod"], lot=p["lot"], kalan=p["kalan"], giris=p["giris"],
                                 fiyat=_r(p["fiyat"], 4), stop=p["stop"], stop0=p["stop0"], h=p["h"], kademe=p["kademe"],
                                 kz=_r(pk, 0), yuzde=_r(pk / (p["giris"] * p["lot"]) * 100, 2), saat=saat(p["giris_ts"]),
@@ -4217,6 +4251,7 @@ class CanliBot:
                         st=self._istatistik(), bugun=dict(islem=bugun.get("al", 0), kz=_r(bugun.get("kz", 0), 0), acik_kz=_r(acik_kz, 0),
                                                          kapanan=len(bugun_islem), kazanan=sum(1 for x in bugun_islem if x["kz"] > 0)),
                         ogrenme=self._ogrenme_ui(),
+                        kurulum_canli={k: dict(n=v["n"], kaz=round(v["kaz"] * 100), R=_r(v["R"], 2)) for k, v in ortak_ogrenme()["kurulum"].items()},
                         maruziyet=_r(sum(x["deger"] for x in poz) / oz * 100 if oz else 0, 1), bekleyen=bekleyen, durum=d.get("durum") or {}, tani=d.get("tani"),
                         son_tik=saat(d["son_tik"]) if d.get("son_tik") else None, ad=self.ad,
                         kayip=kayip_analizi([dict(kazandi=x["kz"] > 0, R=x["R"], saat=x.get("saat"), kurulum=x.get("kurulum"),
@@ -4378,6 +4413,7 @@ class Ogrenci:
                 ctx = an["ctx"]
                 A, n, ep = ctx["A"], ctx["n"], _ep_dizi(ctx["df"])
                 r0 = g["g"] - g["st"]
+                mal = 2 * (KAYMA + 0.001) * g["g"] / r0           # alış+satış kayma ve komisyonu R cinsinden
                 bitti = False
                 for i in range(min(n, len(ep))):
                     ti = int(ep[i])
@@ -4386,11 +4422,11 @@ class Ogrenci:
                     g["son"], g["bar"] = ti, g["bar"] + 1
                     lo, hi = float(A["Low"][i]), float(A["High"][i])
                     if lo <= g["st"]:                              # temkinli: aynı mumda ikisi de olduysa stop sayılır
-                        self._kapat(g, -1.0, ti); bitti = True; break
+                        self._kapat(g, -1.0 - mal, ti); bitti = True; break
                     if hi >= g["hd"]:
-                        self._kapat(g, (g["hd"] - g["g"]) / r0, ti); bitti = True; break
+                        self._kapat(g, (g["hd"] - g["g"]) / r0 - mal, ti); bitti = True; break
                     if g["bar"] >= TEST_UFKU:
-                        self._kapat(g, (float(A["Close"][i]) - g["g"]) / r0, ti); bitti = True; break
+                        self._kapat(g, (float(A["Close"][i]) - g["g"]) / r0 - mal, ti); bitti = True; break
                 if not bitti:
                     kalan.append(g)
             self.d["golge"] = kalan
@@ -4910,6 +4946,58 @@ def sinyal_kayitlari(tum: list[dict], ctxler: dict) -> list[dict]:
                         kurulum=s.get("kurulum", ""), sektor=sektor_bul(s.get("sym", "")), kalite=kal, rejim=s.get("rejim", 0), mtf=s.get("mtf", 0)))
     return out
 
+# ---------- Veri arşivi: Yahoo 15 dk veriyi sadece ~60 gün veriyor; her günün mumlarını GitHub'da biriktiririz ----------
+ARSIV_KLASOR = "arsiv"
+
+
+def arsiv_yaz(gi: dict, tarih: dt.date) -> str | None:
+    """O günün 15 dk mumlarını tek dosyaya yazar (gün bir kez). Dönüş: kısa durum metni ya da None."""
+    dep = depo_kur(f"{ARSIV_KLASOR}/15m-{tarih:%Y-%m-%d}.json")
+    if not dep:
+        return None
+    if dep.oku():
+        return "zaten arşivde"
+    veri = {}
+    for s, df in gi.items():
+        try:
+            g = df[df.index.date == tarih]
+        except Exception:  # noqa: BLE001
+            continue
+        if not len(g):
+            continue
+        ep = _ep_dizi(g)
+        v = g[["Open", "High", "Low", "Close", "Volume"]].values
+        veri[s] = [[int(t)] + [float(f"{x:.6g}") for x in r] for t, r in zip(ep, v)]
+    if not veri:
+        return None
+    ok = dep.yaz(dict(surum=1, tarih=str(tarih), aralik="15m", v=veri))
+    return f"{len(veri)} hisse arşivlendi" if ok else dep.hata
+
+
+def arsiv_oku(once: dt.date, en_fazla: int = 120) -> dict:
+    """'once' tarihinden ÖNCEKİ arşiv günlerini hisse → DataFrame olarak döndürür (Yahoo'nun vermediği eski günler)."""
+    dep = depo_kur(ARSIV_KLASOR)
+    if not dep:
+        return {}
+    k, liste = dep._istek("GET", f"/repos/{dep.repo}/contents/{ARSIV_KLASOR}?ref={dep.dal}")
+    if k != 200 or not isinstance(liste, list):
+        return {}
+    adlar = sorted(x["name"] for x in liste if str(x.get("name", "")).startswith("15m-") and x["name"][4:14] < f"{once:%Y-%m-%d}")
+    satir = {}
+    for ad in adlar[-en_fazla:]:
+        try:
+            d = depo_kur(f"{ARSIV_KLASOR}/{ad}").oku() or {}
+        except Exception:  # noqa: BLE001
+            continue
+        for s, l in (d.get("v") or {}).items():
+            satir.setdefault(s, []).extend(l)
+    out = {}
+    for s, l in satir.items():
+        a = np.array(l, dtype=float)
+        idx = pd.to_datetime(a[:, 0].astype("int64"), unit="s", utc=True).tz_convert(TZ)
+        out[s] = pd.DataFrame(a[:, 1:], index=idx, columns=["Open", "High", "Low", "Close", "Volume"])
+    return out
+
 
 # ---------- Arka plan servisi: sürekli tarar, botu çalıştırır, site açılınca hazır sonuç verir ----------
 class Servis:
@@ -4934,7 +5022,61 @@ class Servis:
                          for k, v in RAKIPLER.items()}
         self.kayip = {m: [] for m in MODLAR}
         self.haber = HaberServis()
+        self.eski = False
+        self._anlik_yukle()           # son kaydedilen sayfa: site ilk taramayı beklemeden hemen açılır
         threading.Thread(target=self._dongu, daemon=True).start()
+
+    # --- son sayfanın anlık kopyası (yeniden başlatmada beklememek için) ---
+    ANLIK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sayfa_anlik.json.gz")
+
+    def _anlik_yukle(self):
+        ham = None
+        try:
+            with open(self.ANLIK, "rb") as f:
+                ham = f.read()
+        except Exception:  # noqa: BLE001
+            pass
+        if ham is None:
+            dep = depo_kur("sayfa_anlik.json")
+            if dep:
+                try:
+                    d = dep.oku()
+                    self._anlik_depo = dep
+                    ham = base64.b64decode(d["gz"]) if d and d.get("gz") else None
+                except Exception:  # noqa: BLE001
+                    ham = None
+        try:
+            v = gzip.decompress(ham).decode("utf-8") if ham else ""
+        except Exception:  # noqa: BLE001
+            v = ""
+        if len(v) > 1000 and v.endswith("}"):
+            self.veri, self.eski = v[:-1] + ',"eski":true}', True
+            self.durum = "Son kaydedilen veriler gösteriliyor, güncel tarama sürüyor"
+
+    def _anlik_kaydet(self):
+        try:
+            ham = gzip.compress(self.veri.encode("utf-8"), 6)
+            with open(self.ANLIK + ".tmp", "wb") as f:
+                f.write(ham)
+            os.replace(self.ANLIK + ".tmp", self.ANLIK)
+        except Exception:  # noqa: BLE001
+            return
+        if time.time() - getattr(self, "_anlik_git", 0) < 1800:
+            return
+        self._anlik_git = time.time()
+        dep = getattr(self, "_anlik_depo", None) or depo_kur("sayfa_anlik.json")
+        self._anlik_depo = dep
+        if not dep:
+            return
+
+        def yukle():
+            try:
+                if not dep.hazir:
+                    dep.oku()
+                dep.yaz(dict(t=int(time.time()), gz=base64.b64encode(ham).decode()))
+            except Exception:  # noqa: BLE001
+                pass
+        threading.Thread(target=yukle, daemon=True).start()
 
     def sayfa(self, mesaj: str | None = None) -> str:
         b = self.canli.ui(self.bist_p)
@@ -4957,6 +5099,10 @@ class Servis:
                 self.hata = f"{type(e).__name__}: {e}"
             gc.collect()
             acik = seans_acik_mi()
+            try:
+                self._aksam()
+            except Exception as e:  # noqa: BLE001
+                self.hata = f"Akşam işleri: {type(e).__name__}: {e}"
             if not acik and time.time() - self.derin_zaman > 3 * 3600:
                 try:
                     self._derin()
@@ -4964,6 +5110,42 @@ class Servis:
                     self.hata = f"Derin test: {type(e).__name__}: {e}"
                 gc.collect()
             time.sleep(45 if acik else 600)
+
+    def _aksam(self):
+        """Seans bittikten sonra günde bir kez: günün 15 dk verisini arşive yaz, telefona akşam raporu gönder."""
+        simdi = dt.datetime.now(TZ)
+        if simdi.weekday() >= 5 or simdi.time() < dt.time(18, 15):
+            return
+        bugun = simdi.strftime("%Y-%m-%d")
+        if getattr(self, "_aksam_gun", None) == bugun:
+            return
+        self._aksam_gun = bugun
+        # 1) Arşiv
+        try:
+            gi = _gun_ici([h for h in TUM_HISSELER if self.gunluk and h in self.gunluk] or TUM_HISSELER[:200], "5d", "15m")
+            self.arsiv_durum = arsiv_yaz(gi, simdi.date())
+            del gi
+        except Exception as e:  # noqa: BLE001
+            self.arsiv_durum = f"arşiv hatası: {e}"
+        # 2) Rapor (aynı gün iki kez gönderilmesin diye ortak kayıtta tutulur)
+        if self.ortak.d.get("rapor_gun") == bugun:
+            return
+        self.ortak.d["rapor_gun"] = bugun
+        satir = []
+        for b in [self.canli] + list(self.rakipler.values()):
+            g = b.d["gunler"].get(bugun, {})
+            kap = [x for x in b.d["islem"] if b._gun(x["cikis_ts"]) == bugun]
+            oz = b._ozkaynak()
+            satir.append(f"{b.ad}: bugün {'+' if g.get('kz', 0) >= 0 else '−'}{sayi(abs(g.get('kz', 0)), 0)} TL, "
+                         f"{len(kap)} işlem kapandı ({sum(1 for x in kap if x['kz'] > 0)} kazanç), toplam {'+' if oz >= b.d['ayar']['butce'] else '−'}%{sayi(abs(oz / b.d['ayar']['butce'] - 1) * 100, 1)}")
+        try:
+            u = self.ogrenci.ui()
+            d0 = (u.get("dersler") or [None])[0]
+            satir.append(f"Öğrenme: {u['n']} ders, seviye {u['seviye']['ad']}" + (f". En belirgin ders: {d0['metin']} (ort. {sayi(d0['E'], 2)}R)" if d0 else ""))
+        except Exception:  # noqa: BLE001
+            pass
+        self.ortak.gonder("Borsa Radar · günün raporu", "\n".join(satir), "bar_chart", tur="bot", oncelik=3)
+        self.ortak._kaydet()
 
     def _derin(self):
         """Geçmiş test, karne, öğrenen model ve hata analizi. Her zaman dilimi ayrı ayrı ve hisse hisse işlenir;
@@ -4974,35 +5156,59 @@ class Servis:
                     and (gunluk[h]["Close"] * gunluk[h]["Volume"]).tail(20).mean() / 1e6 >= MIN_LIKIDITE]
         hizli = sorted(likitler, key=lambda h: -(gunluk[h]["Close"] * gunluk[h]["Volume"]).tail(20).mean())[:HIZLI_EVREN]
         xug = gunluk.get("XU100")
-        xu = _gun_ici(["XU100"]).get("XU100")
+        xu = _gun_ici(["XU100"], "60d", "15m").get("XU100")
         if (xu is None or len(xu) <= 40) and xug is not None and len(xug) > 60:
             xu = pd.DataFrame({"Close": xug["Close"].shift(1)}).dropna()
             xu.index = xu.index.tz_localize(TZ) + pd.Timedelta(hours=9)
         acik = seans_acik_mi()
         for mod in ("w", "g", "5", "1"):
             semb = hizli if mod in ("1", "5") else likitler
+            # Uzun geçmiş: günlükte 2 yıl, 15 dk ve 5 dk'da Yahoo'nun verdiği en uzun süre (60 gün) + arşivdeki eski günler.
+            # Bellek için hisseler 80'erli parçalar halinde indirilir ve işlenir.
+            g2 = None
+            eski = {}
             if mod == "w":
-                kaynak = gunluk
-            else:
-                kaynak = _gun_ici(semb, *({"g": ("30d", "15m"), "5": ("20d", "5m"), "1": ("5d", "1m")}[mod]))
-            tum = []
-            for h in semb:
                 try:
-                    a = hisse_analiz(h, kaynak.get(h), gunluk.get(h), xug if mod == "w" else xu, not acik, tam_test=True, mod=mod)
+                    g2 = gunluk_veri("2y")
                 except Exception:  # noqa: BLE001
-                    a = None
-                if not a:
-                    continue
-                f = filtrele(a["sinyaller"], ESIK)
-                df, n = a["ctx"]["df"], a["ctx"]["n"]
-                for s_ in f:
-                    s_["sym"] = h
-                self.derin_sin[mod][h] = [kompakt(sinyal_json(s_, df, n, a["fiyat"], mod)) for s_ in f]
-                for s_ in f:                              # sinyal kayıtlarında büyük nesne tutma
-                    s_.pop("_j", None)
-                tum += f
-                del a
-            del kaynak
+                    g2 = gunluk
+            if mod == "g":
+                try:
+                    eski = arsiv_oku(dt.datetime.now(TZ).date() - dt.timedelta(days=58))
+                except Exception:  # noqa: BLE001
+                    eski = {}
+            tum = []
+            for i0 in range(0, len(semb), 80):
+                parca = semb[i0:i0 + 80]
+                if mod == "w":
+                    kaynak = g2
+                else:
+                    kaynak = _gun_ici(parca, *({"g": ("60d", "15m"), "5": ("60d", "5m"), "1": ("7d", "1m")}[mod]))
+                    for h in parca:
+                        if h in eski and h in kaynak:
+                            bir = pd.concat([eski[h], kaynak[h]])
+                            kaynak[h] = bir[~bir.index.duplicated(keep="last")].sort_index()
+                for h in parca:
+                    try:
+                        gd = (g2 or gunluk).get(h) if mod == "w" else gunluk.get(h)
+                        a = hisse_analiz(h, kaynak.get(h), gd, (g2 or gunluk).get("XU100", xug) if mod == "w" else xu, not acik, tam_test=True, mod=mod)
+                    except Exception:  # noqa: BLE001
+                        a = None
+                    if not a:
+                        continue
+                    f = filtrele(a["sinyaller"], ESIK)
+                    df, n = a["ctx"]["df"], a["ctx"]["n"]
+                    for s_ in f:
+                        s_["sym"] = h
+                    self.derin_sin[mod][h] = [kompakt(sinyal_json(s_, df, n, a["fiyat"], mod)) for s_ in f]
+                    for s_ in f:                              # sinyal kayıtlarında büyük nesne tutma
+                        s_.pop("_j", None)
+                    tum += f
+                    del a
+                if mod != "w":
+                    del kaynak
+                gc.collect()
+            del g2, eski
             self.karne[mod], AGIRLIK[mod] = karne_hesapla(tum)
             self.bot[mod] = bot_portfoyu(tum)
             hatalardan_ogren(tum, mod)
@@ -5123,12 +5329,17 @@ class Servis:
         # Canlı bot: yeni sinyallere gir, açık pozisyonları yönet
         self.durum = "Canlı bot pozisyonları güncelliyor"
         try:
-            self.canli.tik(analiz, acik, self.bist_p, bist["d"] if bist else None, haber_ozet)
+            # Seans açıkken endeksin bugüne ait verisi henüz gelmediyse (açılışta ~30 dk) "günlük değişim" aslında dünün
+            # değişimidir; bot bunu bugünün düşüşü sanıp filtre/küçültme yapmasın
+            bist_bot = bist["d"] if bist else None
+            if acik and xu15_gercek and gi["XU100"].index[-1].date() != dt.datetime.now(TZ).date():
+                bist_bot = None
+            self.canli.tik(analiz, acik, self.bist_p, bist_bot, haber_ozet)
         except Exception as e:  # noqa: BLE001
             self.hata = f"Bot: {type(e).__name__}: {e}"
         for r in self.rakipler.values():
             try:
-                r.tik(analiz, acik, self.bist_p, bist["d"] if bist else None, haber_ozet)
+                r.tik(analiz, acik, self.bist_p, bist_bot, haber_ozet)
             except Exception as e:  # noqa: BLE001
                 self.hata = f"Rakip bot: {type(e).__name__}: {e}"
         try:                                     # fiyat alarmları ve A+ sinyal bildirimleri
@@ -5171,6 +5382,8 @@ class Servis:
                      likit=len(likitler), ufuk=TEST_UFKU, esik=ESIK,
                      derin=f"{dt.datetime.fromtimestamp(self.derin_zaman, TZ):%H:%M}" if self.derin_zaman else None)
         self.veri = json.dumps(paket, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+        self.eski = False
+        self._anlik_kaydet()
         self.surum += 1
         self.durum, self.ilerleme = "Hazır", 1.0
 
